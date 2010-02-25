@@ -1,0 +1,65 @@
+#!/bin/sh
+
+test -d "$1" -a -f "$1/divine" || {
+    echo "First parameter has to be directory with your divine binary."
+    exit 1
+}
+
+# fake ssh for mpiexec
+cat > $1/ssh <<EOF
+#!/bin/sh
+test "\$1" = "-x" && shift
+shift # hostname
+eval "\$@"
+EOF
+chmod +x $1/ssh
+
+p="$1"
+p1=`echo -n "$p" | sed -e 's,C:,/c,;s,\\\\,/,g;'` # MSYS hack
+PATH="$p:$p1:$PATH"
+shift
+
+export MPIEXEC="$1"
+shift
+
+tests="$@"
+
+for t_ in $tests; do
+    t=`basename $t_`
+    printf "Running %-40s" "$t ..."
+    out=`bash $t_ 2>&1`
+    ret=$?
+    if test $ret = 0; then
+	echo " passed."
+    elif test $ret = 200; then
+        skipped="$skipped $t"
+	echo " skipped."
+    else
+	echo " FAILED!"
+	len=`echo $t | wc -c`
+	# fancy formatting...
+	printf -- "--- Output: $t -"
+	for i in `seq $(($len + 14)) 78`; do echo -n "-"; done; echo
+	printf "%s\n" "$out"
+	printf -- "--- End: $t ----"
+	for i in `seq $(($len + 14)) 78`; do echo -n "-"; done; echo
+	failed="$failed $t"
+    fi
+done
+
+if test -n "$skipped"; then
+    echo "Tests skipped:"
+    for t in $skipped; do
+	printf "\t%s\n" $t
+    done
+fi
+
+if test -n "$failed"; then
+    echo "TESTS FAILED:"
+    for t in $failed; do
+	printf "\t%s\n" $t
+    done
+    exit 1
+else
+    echo "All tests passed."
+fi

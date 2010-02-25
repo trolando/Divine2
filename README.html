@@ -1,0 +1,132 @@
+<h1>DiVinE 2.0</h1>
+
+<h2>Introduction</h2>
+
+<p>DiVinE 2.0 exploits full power of modern x86 hardware and reduces unnecessary
+delays in workflow. Employing state-of-the-art parallel liveness checking
+algorithm, DiVinE 2.0 offers unmatched scalability on both shared memory and
+distributed memory platforms in the range of 2- to 16-core machines and
+clusters thereof. Moreover, the tool supports 64-bit platforms out of the box,
+allowing it to leverage all the memory available in contemporary systems (and
+systems of the upcoming years).</p>
+
+<p>In the current DiVinE release, input is provided in DVE format -- an
+industry-strength specification language, as used in original DiVinE Cluster
+0.7 and DiVinE Multi-Core 1.x, with plenty of diverse example models, ranging
+from simple toys to complex real-world models. There is an extensive model
+resource available, <a href="http://divine.fi.muni.cz/">The Beem Database</a>, with large amount of downloadable
+models and properties.</p>
+
+<h2>Build Instructions</h2>
+
+<p>This package requires pthreads and a recent g++ (4.1 or later, tested under
+4.3.4). You will also need cmake (www.cmake.org, tested with 2.6 -- however,
+the configure script could download and compile it for you, just run configure
+and answer the question(s)).</p>
+
+<p>After unpacking the tarball, compile the source (the build system
+should give you fairly clear indication what's wrong in case of
+failure).</p>
+
+<pre><code>$ ./configure
+$ make
+</code></pre>
+
+<p>Assuming, that build finishes successfully, you can try to run the binary:</p>
+
+<pre><code>$ ./_build/tools/divine help
+$ ./_build/tools/divine reachability examples/shuffle.dve
+$ ./_build/tools/divine owcty examples/peterson-liveness.dve
+$ ./_build/tools/divine owcty examples/peterson-naive.dve
+</code></pre>
+
+<p>There is no need to install the binaries, as they are mostly
+self-contained. However, to make the tool more readily available, you can
+install using:</p>
+
+<pre><code># make install
+</code></pre>
+
+<h2>Further usage instructions</h2>
+
+<p>Reference of commandline options is available with <code>divine help</code>, as detailed
+above. The most useful invocations are these:</p>
+
+<ul>
+<li>run reachability on 8 cores:
+<code>./_build/tools/divine reachability -w 8 input.dve</code></li>
+<li>run model checking on 4 cores:
+<code>./_build/tools/divine owcty -w 4 input-with-property.dve</code></li>
+</ul>
+
+<p>There are several example inputs, mostly coming from <a href="http://divine.fi.muni.cz/">The BEEM Database</a>,
+distributed with the tool under the <code>examples/</code> directory. These are the files
+prefixed <code>beem-</code>. Many more models are available for download in the BEEM
+repository.</p>
+
+<h2>Graphical User Interface</h2>
+
+<p>If Qt4 development files are available on your machine, a graphical user
+interface for the DiVinE Tool will be compiled as part of the build process.
+You can run the interface with:</p>
+
+<pre><code>$ PATH=./_build/tools:$PATH ./_build/gui/divine.ide
+</code></pre>
+
+<p>Please see online help for further information about using the interface. If
+you have chosen to install the tool, you should put it on your PATH, and then
+issue <code>divine.ide</code>.</p>
+
+<h2>Known Issues</h2>
+
+<p>Scalability on 64-bit platforms is inferior to scalability on 32-bit
+platforms. If you are running on x86_64 or other similar architecture
+which can run 32-bit binaries natively, you can compile DiVinE in
+32-bit mode:</p>
+
+<pre><code>$ CXXFLAGS=-m32 ./configure
+$ make
+</code></pre>
+
+<p>If you have previously run configure, you may need to delete or move
+the _build directory out of way. However, using 32-bit mode limits the
+size of verifiable models to roughly 3GB.</p>
+
+<h2>Reporting Problems</h2>
+
+<p>The DiVinE project uses Trac for managing problem reports. If you encounter a
+behaviour you believe is a bug in DiVinE, please <a href="http://divine.fi.muni.cz/">file a new ticket</a> in
+<a href="http://www.darcs.net/">DiVinE Trac</a>. However, before reporting issues, please consider checking
+if there is a more recent version available and if the issue has been reported
+already (in the latter case, please add a comment to the existing ticket, that
+you have encountered the issue, and if possible, any further details you may
+know about the problem). Thanks in advance.</p>
+
+<h2>Obtaining New Versions</h2>
+
+<p>The latest release is always available through <a href="http://divine.fi.muni.cz/">project pages</a>, section
+Download. You could also obtain the latest development snapshot through darcs
+(you need version 2.0 or later), which is used for version control:</p>
+
+<pre><code>$ darcs get http://divine.fi.muni.cz/darcs/mainline divine
+</code></pre>
+
+<p>When you already have a darcs repository of the project, you can get
+the latest changes by issuing:</p>
+
+<pre><code>$ darcs pull
+</code></pre>
+
+<p>in the repository directory. For further details on using darcs, please consult
+the file "HACKING" in the source tree and <a href="http://www.darcs.net/">darcs homepage</a>.</p>
+
+<h2>Licence</h2>
+
+<p>The source code comes with NO WARRANTY, as detailed in the licence texts, which
+may be found in the file "COPYING" in the distribution tarball. The tool is a
+product of The ParaDiSe Laboratory, Faculty of Informatics of Masaryk
+University.</p>
+
+<p>This distribution includes freely redistributable third-party
+code. Please refer to AUTHORS and COPYING included in the distribution
+for copyright and licensing details.</p>
