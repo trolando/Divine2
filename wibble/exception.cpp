@@ -30,7 +30,9 @@
 #include <iostream>
 
 #ifdef POSIX
+#ifndef __CYGWIN__ 
 #include <execinfo.h>
+#endif
 #endif
 
 using namespace std;
@@ -46,9 +48,14 @@ void DefaultUnexpected()
 	try {
 		const int trace_size = 50;
 		void *addrs[trace_size];
+#ifndef __CYGWIN__ 
 		size_t size = backtrace (addrs, trace_size);
 		char **strings = backtrace_symbols (addrs, size);
-
+#else
+		size_t size = 0;
+		char **strings = (char**)&"";   
+#endif
+		
 		cerr << "Caught unexpected exception, " << size << " stack frames unwound:" << endl;
 		for (size_t i = 0; i < size; i++)
 			cerr << "   " << strings[i] << endl;

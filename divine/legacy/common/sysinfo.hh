@@ -8,7 +8,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#if defined (__linux)
+#if defined (__linux) || defined(__CYGWIN__)
 #include <sys/resource.h>
 #endif
 #ifdef __APPLE__

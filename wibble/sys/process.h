@@ -27,6 +27,12 @@
 #ifdef POSIX
 #include <sys/types.h>
 
+#ifdef __CYGWIN__
+#define	RLIMIT_RSS 8 
+#define RLIMIT_NPROC 9
+#define RLIMIT_MEMLOCK 10 
+#endif
+
 namespace wibble {
 namespace sys {
 namespace process {
