@@ -2022,6 +2022,73 @@ void dve_compiler::gen_transition_info()
     line("return (const int**)&guards_per_transition;");
     block_end();
     line();
+
+    /////////////////////////////////
+    // EXPORT THE GUARD MATRIX     //
+    /////////////////////////////////
+
+    // extract dependency matrix per guard expression
+    std::vector<int> per_guard_matrix;
+
+    sprintf(buf, "int guard[][%d] = ", sv_count);
+    line(buf);
+    block_begin();
+        for(int i=0; i<guard.size(); i++) {
+            // clear per guard matrix
+            per_guard_matrix.clear();
+            per_guard_matrix.resize(sv_count);
+            switch(guard[i].type) {
+                case GUARD_PC:
+                    mark_dependency(guard[i].pc.gid,
+                                    state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
+                    break;
+                case GUARD_EXPR: {
+                    // use ext_transition dummy to store read/write vector
+                    ext_transition_t et;
+                    et.sv_read.resize(sv_count);
+                    et.sv_write.resize(sv_count);
+                    analyse_expression(*guard[i].expr.guard, et, et.sv_read);
+                    per_guard_matrix = et.sv_read;
+                    } break;
+                case GUARD_CHAN:
+                    mark_dependency(guard[i].chan.chan,
+                                    state_creator_t::CHANNEL_BUFFER, -1, per_guard_matrix);
+                    break;
+                case GUARD_COMMITED_FIRST:
+                    for(size_int_t p = 0; p < get_process_count(); p++)
+                        for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                            if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                                mark_dependency(p, state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
+                    break;
+                default:
+                    for(int j=0; j<sv_count; j++) per_guard_matrix[j]=1;
+                    break;
+            }
+
+            if (i != 0) { line(","); }
+            append("{" );
+            // guard
+            for(size_int_t i = 0; i < sv_count; i++)
+            {
+                sprintf(buf, "%s%d", ((i==0)?"":","), per_guard_matrix[i]);
+                append(buf);
+            }
+            append("}" );
+        }
+        line();
+    block_end();
+    line(";");
+    line();
+
+    // export the guard matrix
+    line ("extern \"C\" const int* get_guards_matrix(int g) " );
+    block_begin();
+    sprintf(buf, "if (g>=0 && g < %zu) return guard[g];", guard.size());
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
 }
 
 
