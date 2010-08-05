@@ -1775,6 +1775,87 @@ void dve_compiler::fill_transition_vector(std::vector<ext_transition_t>& transit
     }
 }
 
+bool dve_compiler::split_conjunctive_expression(std::vector<guard>& guard, dve_expression_t* expr)
+{
+    dve_symbol_table_t * parent_table = expr->get_symbol_table();
+    if (!parent_table) gerr << "Splitting expression: Symbol table not set" << thr();
+    switch (expr->get_operator())
+    {
+        case T_PARENTHESIS:
+            return split_conjunctive_expression(guard, expr->left());
+        case T_BOOL_AND:
+            if (!split_conjunctive_expression(guard, expr->left())) {
+                // add left guard
+                struct guard g;
+                g.type = GUARD_EXPR;
+                g.expr.guard = expr->left();
+                guard.push_back(g);
+            }
+            if (!split_conjunctive_expression(guard, expr->right())) {
+                // add right guard
+                struct guard g;
+                g.type = GUARD_EXPR;
+                g.expr.guard = expr->right();
+                guard.push_back(g);
+            }
+            return true;
+        default:
+            return false;
+    }
+}
+
+void dve_compiler::merge_dependent_expression(std::vector<guard>& guard, int sv_count)
+{
+    std::vector<struct guard> result;
+    // mark state vector dependent indices for each guard
+    std::vector< std::vector<int> > guard_matrix(guard.size());
+    for(int i=0; i < guard.size(); i++) {
+        ext_transition_t et;
+        et.sv_read.resize(sv_count);
+        et.sv_write.resize(sv_count);
+        analyse_expression(*guard[i].expr.guard, et, et.sv_read);
+        guard_matrix[i] = et.sv_read;
+    }
+
+    // merge guards in reverse order
+    // this preserves the original order of the guards, thus (i < 5) && a[i] will
+    // be merged in the correct order
+    for(int i=guard.size()-1; i >=0; i--) {
+        // check all guards before this one
+        int dep = -1;
+        for(int j=i-1; j>=0 && dep == -1; j--) {
+            dep = -1;
+            for(int k=0; k < sv_count; k++) {
+                if (guard_matrix[i][k] == 1 && guard_matrix[j][k] == 1) {
+                    dep = j;
+                    break;
+                }
+            }
+        }
+        // none of the guards are dependent, push out
+        if (dep == -1) {
+            guard_matrix.pop_back();
+            result.push_back(guard[i]);
+        // else merge the to
+        } else {
+            // merge guard
+            for(int k=0; k < sv_count; k++) {
+                guard_matrix[dep][k] = max(guard_matrix[dep][k], guard_matrix[i][k]);
+            }
+            guard_matrix.pop_back();
+            // merge expression
+            struct guard g = guard[dep];
+            g.expr.guard =
+                new dve_expression_t(T_BOOL_AND, *guard[dep].expr.guard, *guard[i].expr.guard,
+                                    dynamic_cast<dve_system_t*>(guard[dep].expr.guard->get_parent_system()) );
+
+            guard[dep] = g;
+            guard.pop_back();
+        }
+    }
+    guard.swap(result);
+}
+
 void dve_compiler::gen_transition_info()
 {
     int sv_count = count_state_variables();
@@ -1905,8 +1986,20 @@ void dve_compiler::gen_transition_info()
 
         // push first guard as a whole
         if (current.first->get_guard()) {
-            g = add_guard_expr(guard, current.first->get_guard());
-            gs.insert(g);
+            // try splitting the first guard
+            std::vector<struct guard> gtmp;
+            if (split_conjunctive_expression(gtmp, current.first->get_guard())) {
+                // merge dependent guards again
+                merge_dependent_expression(gtmp, sv_count);
+                // add all split guards
+                for(int j=0; j<gtmp.size(); j++) {
+                    g = add_guard_expr(guard, gtmp[j].expr.guard);
+                    gs.insert(g);
+                }
+            } else {
+                g = add_guard_expr(guard, current.first->get_guard());
+                gs.insert(g);
+            }
         }
 
         // check synchronized
@@ -1914,8 +2007,20 @@ void dve_compiler::gen_transition_info()
             g = add_guard_pc(guard, current.second->get_process_gid(), current.second->get_state1_lid());
             gs.insert(g);
             if (current.second->get_guard()) {
-                g = add_guard_expr(guard, current.second->get_guard());
-                gs.insert(g);
+                // try splitting the second guard
+                std::vector<struct guard> gtmp;
+                if (split_conjunctive_expression(gtmp, current.second->get_guard())) {
+                    // merge dependent guards again
+                    merge_dependent_expression(gtmp, sv_count);
+                    // add all split guards
+                    for(int j=0; j<gtmp.size(); j++) {
+                        g = add_guard_expr(guard, gtmp[j].expr.guard);
+                        gs.insert(g);
+                    }
+                } else {
+                    g = add_guard_expr(guard, current.second->get_guard());
+                    gs.insert(g);
+                }
             }
         } else {
             // synchronized on channel?
@@ -1951,7 +2056,7 @@ void dve_compiler::gen_transition_info()
                     line(buf);
                     break;
                 case GUARD_CHAN:
-                    sprintf(buf, "case %d: return (%s);", i, relate( channel_items(guard[i].chan.chan, "(*src)"), "!=", 
+                    sprintf(buf, "case %d: return (%s);", i, relate( channel_items(guard[i].chan.chan, "(*src)"), "!=",
                         (guard[i].chan.sync_mode == SYNC_EXCLAIM_BUFFER? fmt( channel_capacity( guard[i].chan.chan ) ) : "0" ) ).c_str());
                     line(buf);
                     break;
