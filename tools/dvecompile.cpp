@@ -1789,6 +1789,32 @@ void dve_compiler::gen_transition_info()
     block_end();
     line();
 
+    /////////////////////////////////////
+    /////////////////////////////////////
+
+    // write get_active
+    line( "extern \"C\" bool get_active( state_struct_t *in, int t ) " );
+    block_begin();
+    line("switch(t)");
+    block_begin();
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+        if (current.synchronized) {
+            sprintf(buf, "case %zu: return ((%s) && (%s));", i,
+                in_state(current.first->get_process_gid(), current.first->get_state1_lid(), "(*in)").c_str(),
+                in_state(current.second->get_process_gid(), current.second->get_state1_lid(), "(*in)").c_str());
+            line(buf);
+        } else {
+            sprintf(buf, "case %zu: return (%s);", i, in_state(current.first->get_process_gid(), current.first->get_state1_lid(), "(*in)").c_str());
+            line(buf);
+        }
+    }
+    block_end();
+    line("return false;");
+    block_end();
+    line();
+
+
 }
 
 
