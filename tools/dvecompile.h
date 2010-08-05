@@ -15,8 +15,9 @@ using namespace std;
 struct ext_transition_t
 {
     int synchronized;
+    int commited;               // used for ltsmin
     dve_transition_t *first;
-    dve_transition_t *second; //only when first transition is synchronized;
+    dve_transition_t *second;   // only when first transition is synchronized;
     dve_transition_t *property; // transition of property automaton
     std::vector<int> sv_read;
     std::vector<int> sv_write;
@@ -191,6 +192,7 @@ struct dve_compiler: public dve_explicit_system_t
     void gen_state_struct();
     void gen_initial_state();
     void gen_state_info();
+    void fill_transition_vector(std::vector<ext_transition_t>&);
     void gen_transition_info();
 
     void print_generator();

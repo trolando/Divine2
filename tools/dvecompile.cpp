@@ -949,24 +949,6 @@ void dve_compiler::gen_ltsmin_successors()
                     if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(
                            iter_process_transition_map->first))
                     {
-                        new_label();
-
-                        // committed state
-                        if_begin( true );
-
-                        for(size_int_t p = 0; p < get_process_count(); p++)
-                            for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
-                                if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
-                                    if_clause( in_state( p, c, in ) );
-
-                        if_end(); // otherwise this condition is disjoint with the new condition
-
-                        if_begin(true);
-                        if_clause( in_state( i, iter_process_transition_map->first, in ) );
-                        if_end(); block_begin();
-
-                        new_output_state();
-
                         for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
                             iter_ext_transition_vector != iter_process_transition_map->second.end();
                             iter_ext_transition_vector++)
@@ -977,16 +959,29 @@ void dve_compiler::gen_ltsmin_successors()
                                     get_process(iter_ext_transition_vector->second->get_process_gid()))->
                                 get_commited(iter_ext_transition_vector->second->get_state1_lid()) )
                             {
+                                // only generate if not synchonized or synchonized with a committed transition
+                                new_label();
+
+                                // committed state
+                                if_begin( true );
+
+                                for(size_int_t p = 0; p < get_process_count(); p++)
+                                    for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                                        if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                                            if_clause( in_state( p, c, in ) );
+
+                                if_end(); // otherwise this condition is disjoint with the new condition
+
                                 transition_guard( &*iter_ext_transition_vector, in );
                                 block_begin();
+                                new_output_state();
                                 transition_effect( &*iter_ext_transition_vector, in, out );
+                                yield_state();
                                 block_end();
+
+                                line("return states_emitted;");
                             }
                         }
-
-                        yield_state();
-                        block_end();
-                        line("return states_emitted;");
                     }
                 }
         }
@@ -1656,101 +1651,44 @@ void dve_compiler::gen_state_info()
 
 }
 
-void dve_compiler::gen_transition_info()
+void dve_compiler::fill_transition_vector(std::vector<ext_transition_t>& transitions)
 {
-    int sv_count = count_state_variables();
-    int trans_count = 0;
-    bool first = true;
-    char buf[1024];
-
-    // initialize read/write dependency vector
-    std::vector<int> c_base_sv_read(sv_count);
-    std::vector<int> c_base_sv_write(sv_count);
-
-
-    // output transition vectors
-    sprintf(buf, "int transition_dependency[][2][%d] = ", sv_count);
-    line(buf);
-    block_begin();
-    line("// { ... read ...}, { ... write ...}");
-
-
-    /////////////////////////////////
-    /////////////////////////////////
+    // true if committed states are found
     bool some_commited_state = false;
 
-    // find some commited state
-    for(size_int_t i = 0; i < get_process_count(); i++)
-        for(size_int_t j = 0; j < dynamic_cast<dve_process_t*>(get_process(i))->get_state_count(); j++)
-            if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
-                some_commited_state = true;
-
-    if (some_commited_state)
+    // committed transitions
+    for(size_int_t i = 0; i < this->get_process_count(); i++)
     {
-        // mark commited processes as read
-        for(size_int_t i = 0; i < get_process_count(); i++)
-            for(size_int_t j = 0; j < dynamic_cast<dve_process_t*>(get_process(i))->get_state_count(); j++)
-                if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
-                    mark_dependency(dynamic_cast<dve_process_t*>(get_process(i))->get_gid(),
-                                    state_creator_t::PROCESS_STATE, -1, c_base_sv_read);
-
-        for(size_int_t i = 0; i < this->get_process_count(); i++)
-        {
-            if( transition_map.find(i) != transition_map.end() && !is_property( i ) )
-                for(iter_process_transition_map = transition_map.find(i)->second.begin();
-                    iter_process_transition_map != transition_map.find(i)->second.end();
-                    iter_process_transition_map++)
+        if( transition_map.find(i) != transition_map.end() && !is_property( i ) )
+            for(iter_process_transition_map = transition_map.find(i)->second.begin();
+                iter_process_transition_map != transition_map.find(i)->second.end();
+                iter_process_transition_map++)
+            {
+                if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(
+                       iter_process_transition_map->first))
                 {
-                    if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(
-                           iter_process_transition_map->first))
+                    for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
+                        iter_ext_transition_vector != iter_process_transition_map->second.end();
+                        iter_ext_transition_vector++)
                     {
-                        std::vector<int> c_sv_read(c_base_sv_read);
-                        std::vector<int> c_sv_write(c_base_sv_write);
-
-
-                        for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
-                            iter_ext_transition_vector != iter_process_transition_map->second.end();
-                            iter_ext_transition_vector++)
+                        // !! jak je to s property synchronizaci v comitted stavech !!
+                        if( !iter_ext_transition_vector->synchronized ||
+                            dynamic_cast<dve_process_t*>(
+                                get_process(iter_ext_transition_vector->second->get_process_gid()))->
+                            get_commited(iter_ext_transition_vector->second->get_state1_lid()) )
                         {
-                            // !! jak je to s property synchronizaci v comitted stavech !!
-                            if( !iter_ext_transition_vector->synchronized ||
-                                dynamic_cast<dve_process_t*>(
-                                    get_process(iter_ext_transition_vector->second->get_process_gid()))->
-                                get_commited(iter_ext_transition_vector->second->get_state1_lid()) )
-                            {
-                                // merge sv_read and sv_write vectors 
-                                for(size_int_t i = 0; i < sv_count; i++)
-                                {
-                                    if (iter_ext_transition_vector->sv_read[i])
-                                        c_sv_read[i] = 1;
-                                    if (iter_ext_transition_vector->sv_write[i])
-                                        c_sv_write[i] = 1;
-                                }
-                            }
+                            // store transition in map
+                            ext_transition_t tmp = *iter_ext_transition_vector;
+                            tmp.commited = 1;
+                            transitions.push_back(tmp);
+                            trans_count++;
                         }
-
-                        trans_count++;
-                        if (first) { first = false; } else { line(","); }
-                        append("{{" );
-                        for(size_int_t i = 0; i < sv_count; i++)
-                        {
-                            sprintf(buf, "%s%d", ((i==0)?"":","), c_sv_read[i]);
-                            append(buf);
-                        }
-                        append("},{" );
-                        for(size_int_t i = 0; i < sv_count; i++)
-                        {
-                            sprintf(buf, "%s%d", ((i==0)?"":","), c_sv_write[i]);
-                            append(buf);
-                        }
-                        append("}}");
-
                     }
                 }
-        }
+            }
     }
-    /////////////////////////////////
-    /////////////////////////////////
+
+    // normal transitions
     for(size_int_t i = 0; i < get_process_count(); i++)
     {
         if(transition_map.find(i) != transition_map.end() && !is_property( i ))
@@ -1768,26 +1706,55 @@ void dve_compiler::gen_transition_info()
                             get_process(iter_ext_transition_vector->first->get_process_gid()))->
                         get_commited(iter_ext_transition_vector->first->get_state1_lid()) )
                     {
+                        ext_transition_t tmp = *iter_ext_transition_vector;
+                        tmp.commited = 0;
+                        transitions.push_back(tmp);
                         trans_count++;
-                        if (first) { first = false; } else { line(","); }
-                        append("{{" );
-                        for(size_int_t i = 0; i < sv_count; i++)
-                        {
-                            sprintf(buf, "%s%d", ((i==0)?"":","),
-                                iter_ext_transition_vector->sv_read[i]!=0 ||
-                                c_base_sv_read[i]!=0 ? 1 : 0); // add not in committed state
-                            append(buf);
-                        }
-                        append("},{" );
-                        for(size_int_t i = 0; i < sv_count; i++)
-                        {
-                            sprintf(buf, "%s%d", ((i==0)?"":","), iter_ext_transition_vector->sv_write[i]);
-                            append(buf);
-                        }
-                        append("}}");
                     }
                 }
             }
+    }
+}
+
+void dve_compiler::gen_transition_info()
+{
+    int sv_count = count_state_variables();
+    char buf[1024];
+
+    // initialize read/write dependency vector
+    std::vector<int> c_base_sv_read(sv_count);
+    std::vector<ext_transition_t> transitions;
+    fill_transition_vector(transitions);
+
+    // mark commited processes as read
+    for(size_int_t i = 0; i < get_process_count(); i++)
+        for(size_int_t j = 0; j < dynamic_cast<dve_process_t*>(get_process(i))->get_state_count(); j++)
+            if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
+                mark_dependency(dynamic_cast<dve_process_t*>(get_process(i))->get_gid(),
+                                state_creator_t::PROCESS_STATE, -1, c_base_sv_read);
+
+    // output transition vectors
+    sprintf(buf, "int transition_dependency[][2][%d] = ", sv_count);
+    line(buf);
+    block_begin();
+    line("// { ... read ...}, { ... write ...}");
+
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+        if (i!=0) { line(","); }
+        append("{{" );
+        for(size_int_t j = 0; j < sv_count; j++)
+        {
+            sprintf(buf, "%s%d", ((j==0)?"":","), max(c_base_sv_read[j], current.sv_read[j]) );
+            append(buf);
+        }
+        append("},{" );
+        for(size_int_t j = 0; j < sv_count; j++)
+        {
+            sprintf(buf, "%s%d", ((j==0)?"":","), current.sv_write[j] );
+            append(buf);
+        }
+        append("}}");
     }
     line();
     block_end();
@@ -1797,7 +1764,7 @@ void dve_compiler::gen_transition_info()
     // number of transitions
     line( "extern \"C\" int get_transition_count() " );
     block_begin();
-    sprintf(buf, "return %d;", trans_count);
+    sprintf(buf, "return %zu;", transitions.size());
     line(buf);
     block_end();
     line();
@@ -1805,7 +1772,7 @@ void dve_compiler::gen_transition_info()
     // read dependencies
     line( "extern \"C\" const int* get_transition_read_dependencies(int t) " );
     block_begin();
-    sprintf(buf, "if (t>=0 && t < %d) return transition_dependency[t][0];", trans_count);
+    sprintf(buf, "if (t>=0 && t < %zu) return transition_dependency[t][0];", transitions.size());
     line(buf);
     sprintf(buf, "return NULL;");
     line(buf);
@@ -1815,7 +1782,7 @@ void dve_compiler::gen_transition_info()
     // write dependencies
     line( "extern \"C\" const int* get_transition_write_dependencies(int t) " );
     block_begin();
-    sprintf(buf, "if (t>=0 && t < %d) return transition_dependency[t][1];", trans_count);
+    sprintf(buf, "if (t>=0 && t < %zu) return transition_dependency[t][1];", transitions.size());
     line(buf);
     sprintf(buf, "return NULL;");
     line(buf);
