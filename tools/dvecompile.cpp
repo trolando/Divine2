@@ -2194,8 +2194,78 @@ void dve_compiler::gen_transition_info()
     line(buf);
     block_end();
     line();
+
+    //////////////////////////////////////////
+    // EXPORT GUARD MAY BE COENABLED MATRIX //
+    //////////////////////////////////////////
+
+    // guard may be co-enabled matrix (#guards x #guards)
+    sprintf(buf, "int guardmaybecoenabled[%zu][%zu] = ", guard.size(), guard.size());
+    line(buf);
+    block_begin();
+    for(size_int_t i=0; i < guard.size(); i++) {
+        append("{");
+        for(size_int_t j=0; j < guard.size(); j++) {
+        if (j !=0) append(", ");
+            if (may_be_coenabled(guard[i], guard[j])) {
+                append("1");
+            } else {
+                append("0");
+            }
+        }
+        if (i == guard.size() - 1)
+            line("}");
+        else
+            line("},");
+    }
+    block_end();
+    line(";");
+    line();
+
+
+    // may be co-enabled function
+    line ("extern \"C\" const int* get_guards_may_be_coenabled_matrix(int g) " );
+    block_begin();
+    sprintf(buf, "if (g>=0 && g < %zu) return guardmaybecoenabled[g];", guard.size());
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
 }
 
+bool dve_compiler::may_be_coenabled( guard& ga, guard& gb) {
+    // if type different, return default
+    if (ga.type == gb.type || ga.type == GUARD_COMMITED_FIRST) {
+        switch (ga.type) {
+            case GUARD_PC:
+                // if one committed, and the other is not, they may not be co-enabled
+                if (dynamic_cast<dve_process_t*>(get_process(ga.pc.gid))->get_commited(ga.pc.lid) !=
+                    dynamic_cast<dve_process_t*>(get_process(gb.pc.gid))->get_commited(gb.pc.lid))
+                    return false;
+                // may be co enabled if the gid is different (different process)
+                // or if the lid is the same (same process, same local state)
+                return (ga.pc.gid != gb.pc.gid || ga.pc.lid == gb.pc.lid);
+            case GUARD_EXPR:
+                // difficult static analysis. Give it a try for simple expressions
+                break;
+            case GUARD_CHAN:
+                return (ga.chan.chan != gb.chan.chan || ga.chan.sync_mode == gb.chan.sync_mode);
+            case GUARD_COMMITED_FIRST:
+                // this only works with local states
+                if (gb.type == GUARD_PC) {
+                    // all non-committed local states may not be co-enabled with this guard
+                    return (dynamic_cast<dve_process_t*>(get_process(gb.pc.gid))->get_commited(gb.pc.lid));
+                }
+                break;
+        }
+    } else {
+        // if gb is GUARD COMMITED FIRST, reverse the argument order
+        if (gb.type == GUARD_COMMITED_FIRST) return may_be_coenabled(gb, ga);
+    }
+    // default
+    return true;
+}
 
 void dve_compiler::mark_dependency( size_int_t gid, int type, int idx, std::vector<int> &dep )
 {

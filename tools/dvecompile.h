@@ -222,6 +222,7 @@ struct dve_compiler: public dve_explicit_system_t
     bool split_conjunctive_expression(std::vector<guard>& guard, dve_expression_t* expr);
     void merge_dependent_expression(std::vector<guard>& guard, int sv_count);
     void gen_transition_info();
+    bool may_be_coenabled( guard& ga, guard& gb);
 
     void print_generator();
 };
