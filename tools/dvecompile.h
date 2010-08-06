@@ -45,6 +45,14 @@ struct guard
     };
 };
 
+typedef enum {PRED_LT, PRED_LEQ, PRED_EQ, PRED_NEQ, PRED_GT, PRED_GEQ} predicate_relation_t;
+struct simple_predicate
+{
+    std::string             variable_name;
+    predicate_relation_t    relation;
+    int                     variable_value;
+};
+
 struct dve_compiler: public dve_explicit_system_t
 {
     bool ltsmin;
@@ -222,7 +230,10 @@ struct dve_compiler: public dve_explicit_system_t
     bool split_conjunctive_expression(std::vector<guard>& guard, dve_expression_t* expr);
     void merge_dependent_expression(std::vector<guard>& guard, int sv_count);
     void gen_transition_info();
+    bool get_const_expression( dve_expression_t & expr, int & value);
     bool may_be_coenabled( guard& ga, guard& gb);
+    void extract_predicates( std::vector<simple_predicate>& p, dve_expression_t& e);
+    bool is_conflict_predicate(simple_predicate& p1, simple_predicate p2);
 
     void print_generator();
 };

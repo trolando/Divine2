@@ -2246,9 +2246,18 @@ bool dve_compiler::may_be_coenabled( guard& ga, guard& gb) {
                 // may be co enabled if the gid is different (different process)
                 // or if the lid is the same (same process, same local state)
                 return (ga.pc.gid != gb.pc.gid || ga.pc.lid == gb.pc.lid);
-            case GUARD_EXPR:
+            case GUARD_EXPR: {
                 // difficult static analysis. Give it a try for simple expressions
-                break;
+                std::vector<simple_predicate> ga_sp;
+                std::vector<simple_predicate> gb_sp;
+                extract_predicates(ga_sp, *ga.expr.guard);
+                extract_predicates(gb_sp, *gb.expr.guard);
+                for(int i=0; i < ga_sp.size(); i++) {
+                    for(int j=0; j < gb_sp.size(); j++) {
+                        if (is_conflict_predicate(ga_sp[i], gb_sp[j])) return false;
+                    }
+                }
+                } break;
             case GUARD_CHAN:
                 return (ga.chan.chan != gb.chan.chan || ga.chan.sync_mode == gb.chan.sync_mode);
             case GUARD_COMMITED_FIRST:
@@ -2265,6 +2274,129 @@ bool dve_compiler::may_be_coenabled( guard& ga, guard& gb) {
     }
     // default
     return true;
+}
+
+bool dve_compiler::get_const_expression( dve_expression_t & expr, int & value)
+{
+    dve_symbol_table_t * parent_table = expr.get_symbol_table();
+    if (!parent_table) gerr << "Get const expression: Symbol table not set" << thr();
+    switch (expr.get_operator())
+    {
+        case T_NAT:
+            value = (int)expr.get_value();
+            return true;
+        case T_PARENTHESIS:
+            return get_const_expression(*expr.left(), value);
+        case T_UNARY_MINUS:
+            if ( get_const_expression(*expr.right(), value) ) {
+                value = -value;
+                return true;
+            }
+        default:
+            value = 0;
+    }
+    return false;
+}
+
+void dve_compiler::extract_predicates( std::vector<simple_predicate>& p, dve_expression_t& expr)
+{
+    dve_symbol_table_t * parent_table = expr.get_symbol_table();
+    if (!parent_table) gerr << "Extract predicates: Symbol table not set" << thr();
+    switch (expr.get_operator())
+    {
+        case T_PARENTHESIS:
+            return extract_predicates(p, *expr.left());
+        case T_LT: case T_LEQ: case T_EQ: case T_NEQ: case T_GT: case T_GEQ:
+            if ((*expr.left()).get_operator() == T_ID) {
+                simple_predicate sp;
+                if (get_const_expression(*expr.right(), sp.variable_value) ) {
+                    string proc_part("");
+                    string var_part(parent_table->get_variable((expr.left())->get_ident_gid())->get_name());
+                    if (parent_table->get_variable(expr.get_ident_gid())->get_process_gid() != NO_ID) {
+                        proc_part = parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
+                                    get_process_gid())->get_name();
+                        proc_part += ".";
+                    }
+                    sp.variable_name = proc_part + var_part;
+                    switch(expr.get_operator()) {
+                        case T_LT:  sp.relation = PRED_LT;  break;
+                        case T_LEQ: sp.relation = PRED_LEQ; break;
+                        case T_EQ:  sp.relation = PRED_EQ;  break;
+                        case T_NEQ: sp.relation = PRED_NEQ; break;
+                        case T_GT:  sp.relation = PRED_GT;  break;
+                        case T_GEQ: sp.relation = PRED_GEQ; break;
+                    }
+                    p.push_back(sp);
+                }
+            }
+            break;
+        case T_BOOL_AND:
+        {
+            extract_predicates( p, *expr.left());
+            extract_predicates( p, *expr.right());
+        }
+    }
+    // no disjoint expression found
+    return;
+}
+
+bool dve_compiler::is_conflict_predicate(simple_predicate& p1, simple_predicate p2)
+{
+    // assume no conflict
+    bool no_conflict = true;
+    // conflict only possible on same variable
+    if (p1.variable_name == p2.variable_name) {
+        switch(p1.relation) {
+            case PRED_LT:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value < p1.variable_value - 1) ||
+                (p2.variable_value == p1.variable_value - 1 && p2.relation != PRED_GT) ||
+                (p2.relation == PRED_LT || p2.relation == PRED_LEQ || p2.relation == PRED_NEQ);
+                break;
+
+            case PRED_LEQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value < p1.variable_value) ||
+                (p2.variable_value == p1.variable_value && p2.relation != PRED_GT) ||
+                (p2.relation == PRED_LT || p2.relation == PRED_LEQ || p2.relation == PRED_NEQ);
+                break;
+
+            case PRED_EQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value == p1.variable_value && (p2.relation == PRED_EQ || p2.relation == PRED_LEQ || p2.relation == PRED_GEQ)) ||
+                (p2.variable_value != p1.variable_value && p2.relation == PRED_NEQ) ||
+                (p2.variable_value < p1.variable_value && p2.relation == PRED_GT || p2.relation == PRED_GEQ) ||
+                (p2.variable_value > p1.variable_value && (p2.relation == PRED_LT || p2.relation == PRED_LEQ));
+                break;
+
+            case PRED_NEQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value != p1.variable_value) ||
+                (p2.variable_value == p1.variable_value && p2.relation != PRED_EQ);
+                break;
+
+            case PRED_GT:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value > p1.variable_value + 1) ||
+                (p2.variable_value == p1.variable_value + 1 && p2.relation != PRED_LT) ||
+                (p2.relation == PRED_GT || p2.relation == PRED_GEQ || p2.relation == PRED_NEQ);
+                break;
+
+            case PRED_GEQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value > p1.variable_value) ||
+                (p2.variable_value == p1.variable_value && p2.relation != PRED_LT) ||
+                (p2.relation == PRED_GT || p2.relation == PRED_GEQ || p2.relation == PRED_NEQ);
+                break;
+        }
+    }
+    return !no_conflict;
 }
 
 void dve_compiler::mark_dependency( size_int_t gid, int type, int idx, std::vector<int> &dep )
