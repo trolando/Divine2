@@ -2232,6 +2232,63 @@ void dve_compiler::gen_transition_info()
     line(buf);
     block_end();
     line();
+
+    ///////////////////////////////////////////////
+    // EXPORT NECESSARY ENABLING SETS FOR GUARDS //
+    ///////////////////////////////////////////////
+
+    // guard nes matrix (#guards x #transitions)
+    sprintf(buf, "int guard_nes[%zu][%zu] = ", guard.size(), transitions.size());
+    line(buf);
+    block_begin();
+    for(size_int_t i=0; i < guard.size(); i++) {
+        append("{");
+        for(size_int_t j=0; j < transitions.size(); j++) {
+            if (j != 0) append(", ");
+            append(is_guard_nes(guard[i], transitions[j])?"1":"0");
+        }
+        if (i == guard.size() - 1)
+            line("}");
+        else
+            line("},");
+    }
+
+    block_end();
+    line(";");
+    line();
+
+    // guard nes function
+    line ("extern \"C\" const int* get_guard_nes_matrix(int g) " );
+    block_begin();
+    sprintf(buf, "if (g>=0 && g < %zu) return guard_nes[g];", guard.size());
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+}
+
+bool dve_compiler::is_guard_nes( guard& g, ext_transition_t& t ) {
+    switch (g.type) {
+        case GUARD_PC:
+            if (g.pc.gid == t.first->get_process_gid())
+                return (g.pc.lid == t.first->get_state2_lid());
+            if (t.synchronized && g.pc.gid == t.second->get_process_gid())
+                return (g.pc.lid == t.second->get_state2_lid());
+            return false;
+        case GUARD_CHAN:
+            if (!t.synchronized && g.chan.chan == t.first->get_channel_gid()) {
+                if (t.first->get_sync_mode() == SYNC_EXCLAIM_BUFFER ||
+                    t.first->get_sync_mode() == SYNC_ASK_BUFFER) {
+                    return g.chan.sync_mode != t.first->get_sync_mode();
+                }
+            }
+            return false;
+        case GUARD_COMMITED_FIRST:
+            return ( dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state1_lid()) &&
+                    !dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state2_lid()));
+    }
+    return true;
 }
 
 bool dve_compiler::may_be_coenabled( guard& ga, guard& gb) {
