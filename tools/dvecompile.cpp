@@ -2041,8 +2041,9 @@ void dve_compiler::gen_transition_info()
     }
 
     // export the guard value for this state
-    line ("extern \"C\" const bool get_guard(int g, state_struct_t* src) " );
+    line ("extern \"C\" const bool get_guard(void* model, int g, state_struct_t* src) " );
     block_begin();
+    line ("(void)model;");
     line("switch(g)");
     block_begin();
         for(int i=0; i<guard.size(); i++) {
@@ -2082,6 +2083,48 @@ void dve_compiler::gen_transition_info()
     block_end();
     sprintf(buf, "return false;");
     line(buf);
+    block_end();
+    line();
+
+    // export the guard value for this state
+    line ("extern \"C\" void get_guard_all(void* model, state_struct_t* src, int* guard) " );
+    block_begin();
+    line ("(void)model;");
+    for(int i=0; i<guard.size(); i++) {
+        switch(guard[i].type) {
+            case GUARD_PC:
+                sprintf(buf, "guard[%d] = (%s);", i, in_state(guard[i].pc.gid, guard[i].pc.lid, "(*src)").c_str());
+                line(buf);
+                break;
+            case GUARD_EXPR:
+                sprintf(buf, "guard[%d] = (%s);", i, cexpr(*guard[i].expr.guard,"(*src)").c_str());
+                line(buf);
+                break;
+            case GUARD_CHAN:
+                sprintf(buf, "guard[%d] = (%s);", i, relate( channel_items(guard[i].chan.chan, "(*src)"), "!=",
+                    (guard[i].chan.sync_mode == SYNC_EXCLAIM_BUFFER? fmt( channel_capacity( guard[i].chan.chan ) ) : "0" ) ).c_str());
+                line(buf);
+                break;
+            case GUARD_COMMITED_FIRST:
+                // committed state
+                block_begin();
+                if_begin( true );
+
+                for(size_int_t p = 0; p < get_process_count(); p++)
+                    for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                        if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                            if_clause( in_state( p, c, "(*src)" ) );
+
+                if_end();
+
+                sprintf(buf, "    guard[%d] = 0;", i);
+                line(buf);
+                sprintf(buf, "guard[%d] = 1;", i);
+                line(buf);
+                block_end();
+                break;
+        }
+    }
     block_end();
     line();
 
