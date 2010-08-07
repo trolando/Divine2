@@ -2398,6 +2398,38 @@ bool dve_compiler::get_const_expression( dve_expression_t & expr, int & value)
     return false;
 }
 
+bool dve_compiler::get_const_varname( dve_expression_t & expr, string& var)
+{
+    string var_square_bracket;
+    dve_symbol_table_t * parent_table = expr.get_symbol_table();
+    if (!parent_table) gerr << "Get const var: Symbol table not set" << thr();
+    switch (expr.get_operator())
+    {
+        case T_SQUARE_BRACKETS:
+            int val;
+            if (get_const_expression(*expr.left(), val)) {
+                var_square_bracket = "[" + fmt(val) + "]";
+            } else {
+                return false;
+            }
+            // fall through
+        case T_ID:
+            {
+                string proc_part("");
+                string var_part(parent_table->get_variable(expr.get_ident_gid())->get_name());
+                if (parent_table->get_variable(expr.get_ident_gid())->get_process_gid() != NO_ID) {
+                    proc_part = parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
+                                get_process_gid())->get_name();
+                    proc_part += ".";
+                }
+                var = proc_part + var_part + var_square_bracket;
+            }
+            return true;
+        default:
+            var = "";
+    }
+    return false;
+}
 void dve_compiler::extract_predicates( std::vector<simple_predicate>& p, dve_expression_t& expr)
 {
     dve_symbol_table_t * parent_table = expr.get_symbol_table();
@@ -2406,18 +2438,10 @@ void dve_compiler::extract_predicates( std::vector<simple_predicate>& p, dve_exp
     {
         case T_PARENTHESIS:
             return extract_predicates(p, *expr.left());
-        case T_LT: case T_LEQ: case T_EQ: case T_NEQ: case T_GT: case T_GEQ:
-            if ((*expr.left()).get_operator() == T_ID) {
-                simple_predicate sp;
+        case T_LT: case T_LEQ: case T_EQ: case T_NEQ: case T_GT: case T_GEQ: {
+            simple_predicate sp;
+            if (get_const_varname(*expr.left(), sp.variable_name)) {
                 if (get_const_expression(*expr.right(), sp.variable_value) ) {
-                    string proc_part("");
-                    string var_part(parent_table->get_variable((expr.left())->get_ident_gid())->get_name());
-                    if (parent_table->get_variable(expr.get_ident_gid())->get_process_gid() != NO_ID) {
-                        proc_part = parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
-                                    get_process_gid())->get_name();
-                        proc_part += ".";
-                    }
-                    sp.variable_name = proc_part + var_part;
                     switch(expr.get_operator()) {
                         case T_LT:  sp.relation = PRED_LT;  break;
                         case T_LEQ: sp.relation = PRED_LEQ; break;
@@ -2429,7 +2453,7 @@ void dve_compiler::extract_predicates( std::vector<simple_predicate>& p, dve_exp
                     p.push_back(sp);
                 }
             }
-            break;
+            } break;
         case T_BOOL_AND:
         {
             extract_predicates( p, *expr.left());
