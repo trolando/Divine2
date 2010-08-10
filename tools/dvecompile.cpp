@@ -2129,7 +2129,7 @@ void dve_compiler::gen_transition_info()
     line();
 
     // export the number of guards
-    line ("extern \"C\" const int get_guards_count() " );
+    line ("extern \"C\" const int get_guard_count() " );
     block_begin();
     sprintf(buf, "return %zu;", guard.size());
     line(buf);
@@ -2229,7 +2229,7 @@ void dve_compiler::gen_transition_info()
     line();
 
     // export the guard matrix
-    line ("extern \"C\" const int* get_guards_matrix(int g) " );
+    line ("extern \"C\" const int* get_guard_matrix(int g) " );
     block_begin();
     sprintf(buf, "if (g>=0 && g < %zu) return guard[g];", guard.size());
     line(buf);
@@ -2267,7 +2267,7 @@ void dve_compiler::gen_transition_info()
 
 
     // may be co-enabled function
-    line ("extern \"C\" const int* get_guards_may_be_coenabled_matrix(int g) " );
+    line ("extern \"C\" const int* get_guard_may_be_coenabled_matrix(int g) " );
     block_begin();
     sprintf(buf, "if (g>=0 && g < %zu) return guardmaybecoenabled[g];", guard.size());
     line(buf);
