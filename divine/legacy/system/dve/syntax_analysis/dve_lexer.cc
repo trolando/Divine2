@@ -275,9 +275,9 @@ struct yy_buffer_state
  */
 #define YY_CURRENT_BUFFER_LVALUE (yy_buffer_stack)[(yy_buffer_stack_top)]
 
-void *yyalloc (yy_size_t  );
-void *yyrealloc (void *,yy_size_t  );
-void yyfree (void *  );
+static void *yyalloc (yy_size_t  );
+static void *yyrealloc (void *,yy_size_t  );
+static void yyfree (void *  );
 
 #define yy_new_buffer yy_create_buffer
 
@@ -1854,26 +1854,22 @@ static int yy_flex_strlen (yyconst char * s )
 }
 #endif
 
-void *yyalloc (yy_size_t  size )
+static void *yyalloc (yy_size_t  size )
 {
-	return (void *) malloc( size );
+    return operator new( size );
 }
 
-void *yyrealloc  (void * ptr, yy_size_t  size )
+static void *yyrealloc  (void * ptr, yy_size_t  size )
 {
-	/* The cast to (char *) in the following accommodates both
-	 * implementations that use char* generic pointers, and those
-	 * that use void* generic pointers.  It works with the latter
-	 * because both ANSI C and C++ allow castless assignment from
-	 * any pointer type to void*, and deal with argument conversions
-	 * as though doing an assignment.
-	 */
-	return (void *) realloc( (char *) ptr, size );
+    void *tmp = operator new( size );
+    memcpy( tmp, ptr, size ); /* reads past the end of ptr : - ( */
+    delete ptr;
+    return tmp;
 }
 
-void yyfree (void * ptr )
+static void yyfree (void * ptr )
 {
-	free( (char *) ptr );	/* see yyrealloc() for (char *) cast */
+    delete ptr;
 }
 
 #define YYTABLES_NAME "yytables"

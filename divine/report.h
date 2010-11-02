@@ -3,7 +3,6 @@
 #include <iomanip>
 #include <sstream>
 
-#include <wibble/sys/thread.h>
 #include <wibble/regexp.h>
 #include <divine/config.h>
 #include <divine/version.h>
@@ -18,6 +17,9 @@
 
 #ifdef HAVE_MPI
 #include <mpi.h>
+#ifdef OPEN_MPI
+#include <ompi/version.h>
+#endif
 #endif
 
 #ifdef _WIN32
@@ -39,11 +41,11 @@ struct Result
 {
     enum R { Yes, No, Unknown };
     R ltlPropertyHolds, fullyExplored;
-    uint64_t visited, expanded, deadlocks, goals;
+    uint64_t visited, expanded, deadlocks, transitions;
     std::string iniTrail, cycleTrail;
     Result() :
         ltlPropertyHolds( Unknown ), fullyExplored( Unknown ),
-        visited( 0 ), expanded( 0 ), deadlocks( 0 ), goals( 0 ),
+        visited( 0 ), expanded( 0 ), deadlocks( 0 ), transitions( 0 ),
         iniTrail( "-" ), cycleTrail( "-" )
     {}
 };
@@ -54,7 +56,7 @@ static inline std::ostream &operator<<( std::ostream &o, Result::R v )
                  (v == Result::Yes ? "Yes" : "No" ) );
 }
 
-struct Report : wibble::sys::Thread
+struct Report
 {
     Config &config;
 #ifdef POSIX
@@ -98,39 +100,16 @@ struct Report : wibble::sys::Thread
     }
 #endif
 
-    void *main() {
-        if ( !config.report() )
-            return 0;
-        while ( true ) {
-#ifdef POSIX
-            sleep( 1 );
-#elif defined(_WIN32)
-	    Sleep( 1 );
-#endif
-            if ( m_finished )
-                return 0;
-        }
-    }
-
-    void stop() {
-        try {
-            cancel();
-            join();
-        } catch (...) {} // hopefully nothing fatal...
-    }
-
-    void signal( int s ) 
+    void signal( int s )
     {
         m_finished = false;
         sig = s;
-        stop();
     }
 
-    void finished( Result r ) 
+    void finished( Result r )
     {
         m_finished = true;
         res = r;
-        stop();
     }
 
     struct timeval zeroTime() {
@@ -180,7 +159,7 @@ struct Report : wibble::sys::Thread
         return vmsz;
     }
 
-    std::string architecture() {
+    static std::string architecture() {
 #ifdef __linux
         wibble::ERegexp r( "model name[\t ]*: (.+)", 2 );
         if ( matchLine( "/proc/cpuinfo", r ) )
@@ -220,7 +199,7 @@ struct Report : wibble::sys::Thread
       return "Unknown";
     }
 
-    bool matchLine( std::string file, wibble::ERegexp &r ) {
+    static bool matchLine( std::string file, wibble::ERegexp &r ) {
         std::string line;
         std::ifstream f( file.c_str() );
         while ( !f.eof() ) {
@@ -243,6 +222,30 @@ struct Report : wibble::sys::Thread
 #endif
     }
 
+    static void about( std::ostream &o ) {
+        o << "Version: " << versionString() << std::endl;
+        o << "Build-Date: " << buildDateString() << std::endl;
+        o << "Architecture: " << architecture() << std::endl;
+        o << "Pointer-Width: " << 8 * sizeof( void* ) << std::endl;
+#ifdef NDEBUG
+        o << "Debug: disabled" << std::endl;
+#else
+        o << "Debug: enabled" << std::endl;
+#endif
+
+#ifdef HAVE_MPI
+        int vers, subvers;
+        std::string impl = "unknown implementation";
+        MPI::Get_version( vers, subvers );
+#ifdef OMPI_VERSION
+        impl = std::string( "OpenMPI " ) + OMPI_VERSION;
+#endif
+        o << "MPI-Version: " << vers << "." << subvers << " (" << impl << ")" << std::endl;
+#else
+        o << "MPI-Vesrion: n/a" << std::endl;
+#endif
+    }
+
     void final( std::ostream &o ) {
         if ( !config.report() || m_dumped )
             return;
@@ -255,28 +258,12 @@ struct Report : wibble::sys::Thread
 #endif
 
 #ifdef _WIN32
-	      GetLocalTime(&stFinish);
-	      GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser);
+        GetLocalTime(&stFinish);
+        GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser);
 #endif
-        config.dump( o );
+        about( o );
         o << std::endl;
-        o << "Pointer-Width: " << 8 * sizeof( void* ) << std::endl;
-        o << "Version: " << versionString() << std::endl;
-        o << "Build-Date: " << buildDateString() << std::endl;
-        o << "Architecture: " << architecture() << std::endl;
-#ifdef NDEBUG
-        o << "Debug: disabled" << std::endl;
-#else
-        o << "Debug: enabled" << std::endl;
-#endif
-
-#ifdef HAVE_MPI
-        int vers, subvers;
-        MPI::Get_version( vers, subvers );
-        o << "MPI-Version: " << vers << "." << subvers << std::endl;
-#else
-        o << "MPI-Vesrion: n/a" << std::endl;
-#endif
+        config.dump( o );
         o << "MPI: " << mpi_info << std::endl;
         o << std::endl;
 #ifdef POSIX
@@ -295,13 +282,15 @@ struct Report : wibble::sys::Thread
         o << "Memory-Used: " << vmSize() << std::endl;
         o << "Termination-Signal: " << sig << std::endl;
         o << std::endl;
-        o << "Full-State-Space: " << res.fullyExplored << std::endl;
-        o << "Deadlock-Count: " << res.deadlocks << std::endl;
-        o << "Error-State-Count: " << res.goals << std::endl;
-        o << "State-Expansions: " << res.expanded << std::endl;
         o << "Finished: " << (m_finished ? "Yes" : "No") << std::endl;
-        o << "States-Visited: " << res.visited << std::endl;
         o << "LTL-Property-Holds: " << res.ltlPropertyHolds << std::endl;
+        o << "Full-State-Space: " << res.fullyExplored << std::endl;
+        o << std::endl;
+        o << "States-Visited: " << res.visited << std::endl;
+        o << "States-Expanded: " << res.expanded << std::endl;
+        o << "Transition-Count: " << res.transitions << std::endl;
+        o << "Deadlock-Count: " << res.deadlocks << std::endl;
+        o << std::endl;
         o << "Trail-Init: " << res.iniTrail << std::endl;
         o << "Trail-Cycle: " << res.cycleTrail << std::endl;
     }

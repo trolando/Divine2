@@ -1,6 +1,7 @@
 // -*- C++ -*- (c) 2007, 2008 Petr Rockai <me@mornfall.net>
 
 #include <divine/algorithm/common.h>
+#include <divine/algorithm/map.h> // for VertexId
 #include <divine/ltlce.h>
 #include <divine/visitor.h>
 #include <divine/parallel.h>
@@ -12,41 +13,49 @@
 namespace divine {
 namespace algorithm {
 
-template< typename > struct Owcty;
+template< typename, typename > struct Owcty;
 
 // ------------------------------------------
 // -- Some drudgery for MPI's sake
 // --
-template< typename G >
-struct _MpiId< Owcty< G > >
+template< typename G, typename S >
+struct _MpiId< Owcty< G, S > >
 {
-    static void (Owcty< G >::*from_id( int n ))()
+    typedef Owcty< G, S > A;
+
+    static void (A::*from_id( int n ))()
     {
         switch ( n ) {
-            case 0: return &Owcty< G >::_initialise;
-            case 1: return &Owcty< G >::_reachability;
-            case 2: return &Owcty< G >::_elimination;
-            case 3: return &Owcty< G >::_counterexample;
-            case 4: return &Owcty< G >::_checkCycle;
-            case 5: return &Owcty< G >::_parentTrace;
-            case 6: return &Owcty< G >::_traceCycle;
+            case 0: return &A::_initialise;
+            case 1: return &A::_reachability;
+            case 2: return &A::_elimination;
+            case 3: return &A::_counterexample;
+            case 4: return &A::_checkCycle;
+            case 5: return &A::_parentTrace;
+            case 6: return &A::_traceCycle;
+            case 7: return &A::_por;
+            case 8: return &A::_por_worker;
             default: assert_die();
         }
     }
 
-    static int to_id( void (Owcty< G >::*f)() ) {
-        if( f == &Owcty< G >::_initialise ) return 0;
-        if( f == &Owcty< G >::_reachability ) return 1;
-        if( f == &Owcty< G >::_elimination ) return 2;
-        if( f == &Owcty< G >::_counterexample ) return 3;
-        if( f == &Owcty< G >::_checkCycle) return 4;
-        if( f == &Owcty< G >::_parentTrace) return 5;
-        if( f == &Owcty< G >::_traceCycle) return 6;
+    static int to_id( void (A::*f)() ) {
+        if( f == &A::_initialise ) return 0;
+        if( f == &A::_reachability ) return 1;
+        if( f == &A::_elimination ) return 2;
+        if( f == &A::_counterexample ) return 3;
+        if( f == &A::_checkCycle) return 4;
+        if( f == &A::_parentTrace) return 5;
+        if( f == &A::_traceCycle) return 6;
+        if( f == &A::_por) return 7;
+        if( f == &A::_por_worker) return 8;
         assert_die();
     }
 
     template< typename O >
-    static void writeShared( typename Owcty< G >::Shared s, O o ) {
+    static void writeShared( typename A::Shared s, O o ) {
+        o = s.stats.write( o );
+        *o++ = s.need_expand;
         *o++ = s.initialTable;
         *o++ = s.size;
         *o++ = s.oldsize;
@@ -59,7 +68,9 @@ struct _MpiId< Owcty< G > >
     }
 
     template< typename I >
-    static I readShared( typename Owcty< G >::Shared &s, I i ) {
+    static I readShared( typename A::Shared &s, I i ) {
+        i = s.stats.read( i );
+        s.need_expand = *i++;
         s.initialTable = *i++;
         s.size = *i++;
         s.oldsize = *i++;
@@ -87,9 +98,10 @@ struct _MpiId< Owcty< G > >
  * Weak LTL Properties. In International Conference on Formal Engineering
  * Methods, LNCS. Springer-Verlag, 2009.  To appear.
  */
-template< typename G >
-struct Owcty : Algorithm, DomainWorker< Owcty< G > >
+template< typename G, typename Statistics >
+struct Owcty : Algorithm, DomainWorker< Owcty< G, Statistics > >
 {
+    typedef Owcty< G, Statistics > This;
     typedef typename G::Node Node;
 
     // -------------------------------
@@ -104,15 +116,22 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
         G g;
         CeShared< Node > ce;
         int initialTable;
+        algorithm::Statistics< G > stats;
+        bool need_expand;
+
+        Shared() : cycle_found( false ) {}
     } shared;
 
     struct Extension {
         Blob parent;
-        uintptr_t map;
-        size_t predCount:15;
-        size_t iteration:15;
+        uintptr_t map:(8 * sizeof(uintptr_t) - 2);
         bool inS:1;
         bool inF:1;
+
+        // ... the last word is a bit crammed, so consider just extending this
+        size_t predCount:14; // up to 16k predecessors per node
+        size_t iteration:9; // handle up to 512 iterations
+        unsigned map_owner:9; // handle up to 512 MPI nodes
     };
 
     LtlCE< G, Shared, Extension > ce;
@@ -121,15 +140,21 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
     // -- generally useful utilities
     // --
 
-    Domain< Owcty< G > > &domain() {
-        return DomainWorker< Owcty< G > >::domain();
+    Domain< This > &domain() {
+        return DomainWorker< This >::domain();
     }
 
-    Extension &extension( Node n ) {
+    static Extension &extension( Node n ) {
         return n.template get< Extension >();
     }
 
+    static void updatePredCount( Node n, int p ) {
+        extension( n ).predCount = p;
+    }
+
     bool cycleFound() {
+        if ( shared.cycle_found )
+            return true;
         for ( int i = 0; i < domain().peers(); ++i ) {
             if ( domain().shared( i ).cycle_found )
                 return true;
@@ -138,10 +163,18 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
     }
 
     Node cycleNode() {
-        for ( int i = 0; i < domain().peers(); ++i ) {
-            if ( domain().shared( i ).cycle_found )
-                return domain().shared( i ).cycle_node;
+        if ( shared.cycle_found ) {
+            assert( shared.cycle_node.valid() );
+            return shared.cycle_node;
         }
+
+        for ( int i = 0; i < domain().peers(); ++i ) {
+            if ( domain().shared( i ).cycle_found ) {
+                assert( domain().shared( i ).cycle_node.valid() );
+                return domain().shared( i ).cycle_node;
+            }
+        }
+
         assert_die();
     }
 
@@ -171,14 +204,29 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
                     extension( st ).predCount = 0;
                 if ( extension( st ).inS && extension( st ).inF ) {
                     assert_eq( v.owner( st ), v.worker.globalId() );
-                    v.queue( Blob(), st );
+                    v.queueAny( Blob(), st ); // slightly faster maybe
                 }
             }
         }
     }
 
-    uintptr_t mapId( Node t ) {
-        return reinterpret_cast< uintptr_t >( t.ptr );
+    VertexId makeId( Node t ) {
+        VertexId r;
+        r.ptr = reinterpret_cast< uintptr_t >( t.ptr ) >> 2;
+        r.owner = this->globalId();
+        return r;
+    }
+
+    VertexId getMap( Node t ) {
+        VertexId r;
+        r.ptr = extension( t ).map;
+        r.owner = extension( t ).map_owner;
+        return r;
+    }
+
+    void setMap( Node t, VertexId id ) {
+        extension( t ).map = id.ptr;
+        extension( t ).map_owner = id.owner;
     }
 
     bool updateIteration( Node t ) {
@@ -196,6 +244,7 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
         assert( extension( st ).predCount > 0 );
         assert( extension( st ).inS );
         ++ shared.size;
+        shared.stats.addExpansion();
         return visitor::ExpandState;
     }
 
@@ -213,10 +262,10 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
     }
 
     void _reachability() { // parallel
-        typedef visitor::Setup< G, Owcty< G >, Table,
-            &Owcty< G >::reachTransition,
-            &Owcty< G >::reachExpansion > Setup;
-        typedef visitor::Parallel< Setup, Owcty< G >, Hasher > Visitor;
+        typedef visitor::Setup< G, This, Table, Statistics,
+            &This::reachTransition,
+            &This::reachExpansion > Setup;
+        typedef visitor::Parallel< Setup, This, Hasher > Visitor;
 
         Visitor visitor( shared.g, *this, *this, hasher, &table() );
         queueAll( visitor, true );
@@ -225,7 +274,7 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
 
     void reachability() {
         shared.size = 0;
-        domain().parallel().run( shared, &Owcty< G >::_reachability );
+        domain().parallel().run( shared, &This::_reachability );
         shared.size = totalSize();
     }
 
@@ -238,30 +287,27 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
         if ( !extension( to ).parent.valid() )
             extension( to ).parent = from;
         if ( from.valid() ) {
-            uintptr_t fromMap = extension( from ).map;
-            uintptr_t fromId = mapId( from );
-            if ( fromMap > extension( to ).map )
-                extension( to ).map = fromMap;
+            VertexId fromMap = getMap( from );
+            VertexId fromId = makeId( from );
+            if ( getMap( to ) < fromMap )
+                setMap( to, fromMap  );
             if ( shared.g.isAccepting( from ) ) {
                 if ( from.pointer() == to.pointer() ) {
                     shared.cycle_node = to;
                     shared.cycle_found = true;
                     return visitor::TerminateOnTransition;
                 }
-                if ( fromId > extension( to ).map )
-                    extension( to ).map = fromId;
+                if ( getMap( to ) < fromId )
+                    setMap( to, fromId );
             }
-            if ( mapId( to ) == fromMap ) {
-                // FIXME until we get unique state IDs that work with MPI, this
-                // heuristic is incorrect, as it may find a cycle where there
-                // is none
-                if ( domain().mpi.size() == 1 ) {
-                    shared.cycle_node = to;
-                    shared.cycle_found = true;
-                    return visitor::TerminateOnTransition;
-                }
+            if ( makeId( to ) == fromMap ) {
+                shared.cycle_node = to;
+                shared.cycle_found = true;
+                return visitor::TerminateOnTransition;
             }
         }
+        shared.stats.addEdge();
+        shared.g.porTransition( from, to, &updatePredCount );
         return visitor::FollowTransition;
     }
 
@@ -269,24 +315,51 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
     {
         extension( st ).inF = extension( st ).inS = shared.g.isAccepting( st );
         shared.size += extension( st ).inS;
+        shared.stats.addNode( shared.g, st );
+        shared.g.porExpansion( st );
         return visitor::ExpandState;
     }
 
     void _initialise() { // parallel
-        typedef visitor::Setup< G, Owcty< G >, Table,
-            &Owcty< G >::initTransition,
-            &Owcty< G >::initExpansion > Setup;
-        typedef visitor::Parallel< Setup, Owcty< G >, Hasher > Visitor;
+        typedef visitor::Setup< G, This, Table, Statistics,
+            &This::initTransition,
+            &This::initExpansion > Setup;
+        typedef visitor::Parallel< Setup, This, Hasher > Visitor;
 
         m_initialTable = &shared.initialTable; // XXX find better place for this
-        Visitor visitor( shared.g, *this, *this,
-                         Hasher( sizeof( Extension ) ), &table() );
-        visitor.exploreFrom( shared.g.initial() );
+        Visitor visitor( shared.g, *this, *this, hasher, &table() );
+        shared.g.queueInitials( visitor );
+        visitor.processQueue();
     }
 
     void initialise() {
-        domain().parallel().run( shared, &Owcty< G >::_initialise );
+        domain().parallel().run( shared, &This::_initialise ); updateResult();
         shared.oldsize = shared.size = totalSize();
+        while ( true ) {
+            if ( cycleFound() ) {
+                result().fullyExplored = Result::No;
+                return;
+            }
+
+            shared.need_expand = false;
+            domain().parallel().runInRing( shared, &This::_por );
+            updateResult();
+
+            if ( shared.need_expand ) {
+                domain().parallel().run( shared, &This::_initialise );
+                updateResult();
+            } else
+                break;
+        };
+    }
+
+    void _por_worker() {
+        shared.g._porEliminate( *this, hasher, table() );
+    }
+
+    void _por() {
+        if ( shared.g.porEliminate( domain(), *this ) )
+            shared.need_expand = true;
     }
 
     // -----------------------------------------------
@@ -299,6 +372,7 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
         extension( st ).inS = false;
         if ( extension( st ).inF )
             shared.size ++;
+        shared.stats.addExpansion();
         return visitor::ExpandState;
     }
 
@@ -319,20 +393,19 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
     }
 
     void _elimination() {
-        typedef visitor::Setup< G, Owcty< G >, Table,
-            &Owcty< G >::elimTransition,
-            &Owcty< G >::elimExpansion > Setup;
-        typedef visitor::Parallel< Setup, Owcty< G >, Hasher > Visitor;
+        typedef visitor::Setup< G, This, Table, Statistics,
+            &This::elimTransition,
+            &This::elimExpansion > Setup;
+        typedef visitor::Parallel< Setup, This, Hasher > Visitor;
 
-        Visitor visitor( shared.g, *this, *this,
-                         Hasher( sizeof( Extension ) ), &table() );
+        Visitor visitor( shared.g, *this, *this, hasher, &table() );
         queueAll( visitor );
         visitor.processQueue();
     }
 
     void elimination() {
         shared.size = 0;
-        domain().parallel().run( shared, &Owcty< G >::_elimination );
+        domain().parallel().run( shared, &This::_elimination );
         shared.oldsize = shared.size = shared.oldsize - totalSize();
     }
 
@@ -360,16 +433,14 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
     }
 
     void _checkCycle() {
-        typedef visitor::Setup< G, Owcty< G >, Table,
-            &Owcty< G >::ccTransition,
-            &Owcty< G >::ccExpansion > Setup;
-        typedef visitor::Parallel< Setup, Owcty< G >, Hasher > Visitor;
+        typedef visitor::Setup< G, This, Table, Statistics,
+            &This::ccTransition,
+            &This::ccExpansion > Setup;
+        typedef visitor::Parallel< Setup, This, Hasher > Visitor;
 
-        Visitor visitor( shared.g, *this, *this,
-                         Hasher( sizeof( Extension ) ), &table() );
+        Visitor visitor( shared.g, *this, *this, hasher, &table() );
         assert( shared.cycle_node.valid() );
-        if ( visitor.owner( shared.cycle_node ) == this->globalId() )
-            visitor.queue( Blob(), shared.cycle_node );
+        visitor.queue( Blob(), shared.cycle_node );
         visitor.processQueue();
     }
 
@@ -387,7 +458,7 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
                 continue; // already seen
             if ( !extension( st ).inS || !extension( st ).inF )
                 continue;
-            domain().parallel().run( shared, &Owcty< G >::_checkCycle );
+            domain().parallel().run( shared, &This::_checkCycle );
         }
     }
 
@@ -402,10 +473,10 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
 
     void counterexample() {
         if ( !cycleFound() ) {
-            std::cerr << " obtaining counterexample...      " << std::flush;
+            progress() << " obtaining counterexample...      " << std::flush;
             domain().parallel().runInRing(
-                shared, &Owcty< G >::_counterexample );
-            std::cerr << "done" << std::endl;
+                shared, &This::_counterexample );
+            progress() << "done" << std::endl;
         }
 
         shared.ce.initial = cycleNode();
@@ -421,21 +492,30 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
 
     void printSize() {
         if ( cycleFound() )
-            std::cerr << "   (MAP: cycle found)" << std::endl << std::flush;
+            progress() << "MAP/ET" << std::endl << std::flush;
         else
-            std::cerr << "   |S| = " << shared.size << std::endl << std::flush;
+            progress() << "|S| = " << shared.size << std::endl << std::flush;
     }
 
     void printIteration( int i ) {
-        std::cerr << "------------- iteration " << i
-                  << " ------------- " << std::endl;
+        progress() << "------------- iteration " << i
+                   << " ------------- " << std::endl;
+    }
+
+    void updateResult() {
+        for ( int i = 0; i < domain().peers(); ++i ) {
+            shared.stats.merge( domain().shared( i ).stats );
+        }
+        shared.stats.updateResult( result() );
+        shared.stats = algorithm::Statistics< G >();
     }
 
     Result run()
     {
         size_t oldsize = 0;
 
-        std::cerr << " initialise...\t\t" << std::flush;
+        result().fullyExplored = Result::Yes;
+        progress() << " initialise...\t\t    " << std::flush;
         shared.size = 0;
         initialise();
         printSize();
@@ -448,15 +528,15 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
 
                 printIteration( 1 + shared.iteration / 2 );
 
-                std::cerr << " reachability...\t" << std::flush;
+                progress() << " reachability...\t    " << std::flush;
                 reachability();
-                printSize();
+                printSize(); updateResult();
 
                 ++shared.iteration;
 
-                std::cerr << " elimination & reset...\t" << std::flush;
+                progress() << " elimination & reset...\t    " << std::flush;
                 elimination();
-                printSize();
+                printSize(); updateResult();
 
                 ++shared.iteration;
 
@@ -470,7 +550,6 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
             counterexample();
 
         result().ltlPropertyHolds = valid ? Result::Yes : Result::No;
-        result().fullyExplored = shared.cycle_node.valid() ? Result::No : Result::Yes;
         return result();
     }
 
@@ -478,10 +557,9 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G > >
         : Algorithm( c, sizeof( Extension ) )
     {
         initGraph( shared.g );
-        shared.cycle_found = false;
         shared.size = 0;
         if ( c ) {
-            becomeMaster( &shared, workerCount( c ) );
+            this->becomeMaster( &shared, workerCount( c ) );
             shared.initialTable = c->initialTableSize();
         }
     }

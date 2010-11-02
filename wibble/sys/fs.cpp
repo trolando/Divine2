@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sys/stat.h>
 #include <errno.h>
+#include <malloc.h> // alloca on win32 seems to live there
 
 namespace wibble {
 namespace sys {
@@ -89,7 +90,7 @@ std::string readFile( const std::string &file )
     in.seekg(0, std::ios::end);
     length = in.tellg();
     in.seekg(0, std::ios::beg);
-    char buffer[ length ];
+    char *buffer = (char *) alloca( length );
 
     in.read(buffer, length);
     return std::string( buffer, length );
@@ -103,7 +104,6 @@ void writeFile( const std::string &file, const std::string &data )
     out << data;
 }
 
-#ifdef POSIX
 bool deleteIfExists(const std::string& file)
 {
 	if (unlink(file.c_str()) != 0)
@@ -115,6 +115,7 @@ bool deleteIfExists(const std::string& file)
 		return true;
 }
 
+#ifdef POSIX
 Directory::const_iterator Directory::begin()
 {
 	DIR* dir = opendir(m_path.c_str());

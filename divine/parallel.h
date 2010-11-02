@@ -51,13 +51,8 @@ struct Parallel {
     typedef typename T::Shared Shared;
     std::vector< T > m_instances;
     std::vector< R< T > > m_threads;
-    std::vector< wibble::sys::Thread * > m_extra;
 
     int n;
-
-    void addExtra( wibble::sys::Thread *t ) {
-        m_extra.push_back( t );
-    }
 
     T &instance( int i ) {
         assert( i < n );
@@ -91,12 +86,8 @@ struct Parallel {
     void runThreads() {
         for ( int i = 0; i < n; ++i )
             thread( i ).start();
-        for ( int i = 0; i < m_extra.size(); ++i )
-            m_extra[ i ]->start();
         for ( int i = 0; i < n; ++i )
             thread( i ).join();
-        for ( int i = 0; i < m_extra.size(); ++i )
-            m_extra[ i ]->join();
     }
 
     template< typename F >
@@ -136,6 +127,8 @@ struct BarrierThread : RunThread< T >, Terminable {
         return this->t->workWaiting();
     }
 
+    bool isBusy() { return this->t->isBusy(); }
+
     BarrierThread( T &_t, typename RunThread< T >::F _f )
         : RunThread< T >( _t, _f ), m_barrier( 0 )
     {
@@ -157,7 +150,7 @@ template< typename T >
 struct FifoVector
 {
     int m_last;
-    typedef divine::Fifo< T, NoopMutex > Fifo;
+    typedef divine::Fifo< T > Fifo;
     std::vector< Fifo > m_vector;
 
     bool empty() {
@@ -207,7 +200,7 @@ struct FifoVector
  */
 template< typename T >
 struct DomainWorker {
-    typedef divine::Fifo< Blob, NoopMutex > Fifo;
+    typedef divine::Fifo< Blob > Fifo;
 
     typedef wibble::Unit IsDomainWorker;
 
@@ -215,14 +208,14 @@ struct DomainWorker {
     bool is_master;
     FifoVector< Blob > fifo;
     int m_id;
-    bool m_interrupt;
+    bool m_interrupt, m_busy;
 
     DomainWorker()
-        : m_domain( 0 ), is_master( false ), m_interrupt( false )
+        : m_domain( 0 ), is_master( false ), m_interrupt( false ), m_busy( true )
     {}
 
     DomainWorker( const DomainWorker &o )
-        : m_domain( 0 ), is_master( false ), m_interrupt( false )
+        : m_domain( 0 ), is_master( false ), m_interrupt( false ), m_busy( true )
     {}
 
     template< typename Shared >
@@ -254,9 +247,14 @@ struct DomainWorker {
     }
 
     bool idle() {
+        m_busy = false;
         m_interrupt = false;
-        return master().barrier().idle( terminable() );
+        bool res = master().barrier().idle( terminable() );
+        m_busy = true;
+        return res;
     }
+
+    bool isBusy() { return m_busy; }
 
     bool workWaiting() {
         return !this->fifo.empty();
@@ -285,6 +283,7 @@ struct DomainWorker {
     /// Restart (i.e. continue) computation (after termination has happened).
     void restart() {
         m_interrupt = false;
+        m_busy = true;
         master().parallel().m_threads[ localId() ].m_barrier->started( terminable() );
     }
 
@@ -312,23 +311,25 @@ struct DomainWorker {
  */
 template< typename T >
 struct Domain {
-    typedef divine::Fifo< Blob, NoopMutex > Fifo;
+    typedef divine::Fifo< Blob > Fifo;
 
     struct Parallel : divine::Parallel< T, BarrierThread >
     {
         Domain< T > *m_domain;
-        MpiThread< Domain< T > > mpiThread;
+        MpiWorker< Domain< T > > mpiWorker;
 
         template< typename Shared, typename F >
         void run( Shared &sh, F f ) {
-            initThreads( sh, f );
+            this->initThreads( sh, f );
 
             for ( int i = 0; i < this->n; ++i )
                 this->thread( i ).setBarrier( m_domain->barrier() );
 
             m_domain->mpi.runOnSlaves( sh, f );
-
+            if (m_domain->mpi.size() > 1 )
+                mpiWorker.start();
             this->runThreads();
+            m_domain->mpi.collectSharedBits(); // wait for shared stuff
             m_domain->barrier().clear();
         }
 
@@ -348,10 +349,8 @@ struct Domain {
 
         Parallel( Domain< T > &dom, int _n )
             : divine::Parallel< T, BarrierThread >( _n ),
-              m_domain( &dom ), mpiThread( dom )
+              m_domain( &dom ), mpiWorker( dom )
         {
-            if ( dom.mpi.size() > 1 )
-                addExtra( &mpiThread );
         }
     };
 
@@ -386,10 +385,14 @@ struct Domain {
         return *m_parallel;
     }
 
+    void setupIds() {
+        minId = lastId = n * mpi.rank();
+        maxId = (n * (mpi.rank() + 1)) - 1;
+    }
+
     int obtainId( DomainWorker< T > &t ) {
         if ( !lastId ) {
-            minId = lastId = n * mpi.rank();
-            maxId = (n * (mpi.rank() + 1)) - 1;
+            setupIds();
         }
 
         if ( !m_ids.count( &t ) )
@@ -416,7 +419,7 @@ struct Domain {
         for ( int i = 0; i < parallel().n; ++i )
             parallel().instance( i ).interrupt( true );
         if ( !from_mpi )
-            parallel().mpiThread.interrupt();
+            parallel().mpiWorker.interrupt();
     }
 
     Fifo &queue( int from, int to )
@@ -425,7 +428,7 @@ struct Domain {
             barrier().wakeup( &parallel().thread( to - minId ) );
             return parallel().instance( to - minId ).fifo[ from + 1 ];
         } else
-            return parallel().mpiThread.fifo[ from + to * peers() ];
+            return parallel().mpiWorker.fifo[ from + to * peers() ];
     }
 
     Domain( typename T::Shared *shared = 0, int _n = 4 )

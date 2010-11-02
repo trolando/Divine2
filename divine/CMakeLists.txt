@@ -33,6 +33,8 @@ set_source_files_properties( "${SHA1}.cpp" PROPERTIES GENERATED ON )
 
 macro( stringify file )
   string( REPLACE "." "_" fileu "${file}" )
+  string( REPLACE "/" "_" fileu "${fileu}" )
+  string( REPLACE "-" "_" fileu "${fileu}" )
   add_custom_command(
     OUTPUT ${fileu}_str.cpp
     DEPENDS ${file} ${STRINGIFY}
@@ -41,6 +43,7 @@ macro( stringify file )
     )
 endmacro( stringify )
 
+stringify( generator/custom-api.h )
 stringify( pool.h )
 stringify( circular.h )
 stringify( blob.h )
@@ -50,7 +53,7 @@ add_definitions( ${MPI_COMPILE_FLAGS} )
 
 add_library( libdivine STATIC
     ${SRC_DLFCN} ${SRC_TOP} ${SRC_LEGACY} ${SRC_BA} "${SHA1}.cpp"
-    "${SHA1}.cpp.fake" pool_h_str.cpp circular_h_str.cpp blob_h_str.cpp )
+    "${SHA1}.cpp.fake" pool_h_str.cpp circular_h_str.cpp blob_h_str.cpp generator_custom_api_h_str.cpp )
 set_target_properties( libdivine PROPERTIES OUTPUT_NAME "divine" )
 wibble_add_test( divine-test ${testh} )
 
@@ -58,6 +61,9 @@ if( NOT WIN32 )
   set_target_properties( libdivine PROPERTIES COMPILE_FLAGS -fPIC )
 endif( NOT WIN32 )
 
+if( CURSES_FOUND )
+  target_link_libraries( libdivine ${CURSES_LIBRARIES} )
+endif()
 target_link_libraries( libdivine ${MPI_LIBRARIES} )
 
 if( NOT WIN32 )

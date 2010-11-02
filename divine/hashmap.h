@@ -99,7 +99,7 @@ struct HashMap
 
     typedef std::pair< Key, Value > Item;
 
-    int maxcollision() { return 32 + int( std::sqrt( size() ) ) / 16; }
+    int maxcollision() { return 65536; }
     int growthreshold() { return 75; } // percent
 
     struct Reference {
@@ -121,8 +121,9 @@ struct HashMap
     Keys m_keys;
     Values m_values;
 
-    int m_factor;
     int m_used;
+    int m_bits;
+    size_t m_maxsize;
 
     Hash hash;
     Valid valid;
@@ -134,6 +135,15 @@ struct HashMap
 
     size_t size() const { return m_keys.size(); }
     bool empty() const { return !m_used; }
+    int index( int h, int i ) const {
+        const int Q = 1, R = 1, thresh = 16;
+        if ( i <= thresh )
+            return (h + i) & m_bits;
+        else {
+            i = i - thresh;
+            return (h + thresh + (2 * Q + 1) * i + 2 * R * (i * i)) & m_bits;
+        }
+    };
 
     std::pair< Reference, int > _mergeInsert( Item item,
                                               Keys &keys,
@@ -143,15 +153,11 @@ struct HashMap
         assert( valid( item.first ) ); // ensure key validity
         int used = 0;
         hash_t _hash = hint ? hint : hash( item.first );
-        hash_t off = 0, oldoff = 0, idx = 0;
-        int mc = maxcollision();
-        for ( int i = 0; i < mc; ++i ) {
-            oldoff = off;
-            off = _hash + i*i;
+        int idx;
+        for ( int i = 0; i < maxcollision(); ++i ) {
+            idx = index( _hash, i );
 
             assert( keys.size() == values.size() );
-
-            idx = off % keys.size();
 
             if ( !valid( keys[ idx ] ) || equal( item.first, keys[ idx ] ) ) {
                 if ( !valid( keys[ idx ] ) )
@@ -166,7 +172,7 @@ struct HashMap
                 return std::make_pair( Reference( keys[ idx ], idx ), used );
             }
         }
-        for ( int i = 0; i < mc; ++i ) {
+        for ( int i = 0; i < maxcollision(); ++i ) {
             size_t idx = ((_hash + i*i)%keys.size());
             assert( valid( keys[ idx ] ) );
             assert( ! equal( keys[ idx ], item.first ) );
@@ -190,14 +196,21 @@ struct HashMap
                               << ", maxcollision() = " << maxcollision()
                               << std::endl;
                 }
-                grow();
+                if ( 2 * size() <= m_maxsize )
+                    grow();
+                else {
+                    std::cerr << "Sorry, ran out of space in the hash table!" << std::endl;
+                    abort();
+                }
                 continue;
             }
 
             m_used += r.second;
 
-            if ( r.second > 0 && usage() > (size() * growthreshold()) / 100 )
-                grow();
+            if ( r.second > 0 && usage() > (size() * growthreshold()) / 100 ) {
+                if ( 2 * size() <= m_maxsize )
+                    grow();
+            }
 
             return r.first;
         }
@@ -222,12 +235,9 @@ struct HashMap
     Reference get( Key k, hash_t hint = 0 ) // const (bleh)
     {
         hash_t _hash = hint? hint : hash( k );
-        size_t oldoff, off, idx;
-        int mc = maxcollision();
-        for ( int i = 0; i < mc; ++i ) {
-            oldoff = off;
-            off = _hash + i*i;
-            idx = off % size();
+        size_t idx;
+        for ( int i = 0; i < maxcollision(); ++i ) {
+            idx = index( _hash, i );
 
             if ( !valid( m_keys[ idx ] ) ) {
                 return Reference();
@@ -250,6 +260,11 @@ struct HashMap
     {
         m_keys.resize( s, Key() );
         m_values.resize( s, Value() );
+        m_bits = 0;
+        int origs = s;
+        while ((s = s >> 1))
+            m_bits |= s;
+        assert_eq( origs - 1, m_bits );
     }
 
     template< typename F >
@@ -264,22 +279,19 @@ struct HashMap
         std::fill( m_values.begin(), m_values.end(), Value() );
     }
 
-    void grow( int factor = 0 )
+    void grow()
     {
-        if ( factor == 0 )
-            factor = m_factor;
-
         size_t _size = size();
 
         Keys keys; Values values;
         size_t _used = usage();
 
         assert_eq( m_keys.size(), m_values.size() );
-        assert( factor > 1 );
 
-        // +1 to keep the table size away from 2^n
-        keys.resize( factor * m_keys.size() + 1, Key() );
-        values.resize( factor * m_values.size() + 1, Value() );
+        keys.resize( 2 * m_keys.size(), Key() );
+        values.resize( 2 * m_values.size(), Value() );
+        m_bits |= (m_bits << 1); // unmask more
+
         assert( keys.size() > size() );
         for ( size_t i = 0; i < m_keys.size(); ++i ) {
             if ( valid( m_keys[ i ] ) )
@@ -297,16 +309,16 @@ struct HashMap
     }
 
     HashMap( Hash h = Hash(), Valid v = Valid(), Equal eq = Equal(),
-             int initial = 32, int factor = 2 )
-        : m_factor( factor ), hash( h ), valid( v ), equal( eq )
+             int initial = 32 )
+        : hash( h ), valid( v ), equal( eq )
     {
         m_used = 0;
+        m_maxsize = -1;
         setSize( initial );
 
         // assert that default key is invalid, this is assumed
         // throughout the code
         assert( !valid( Key() ) );
-        assert( factor > 1 );
     }
 };
 

@@ -2,7 +2,10 @@
 
 #include <divine/legacy/system/dve/dve_explicit_system.hh>
 #include <divine/legacy/system/bymoc/bymoc_explicit_system.hh>
+#include <divine/legacy/por/por.hh>
+
 #include <sstream>
+#include <stdexcept>
 
 #include <divine/generator/common.h>
 
@@ -19,6 +22,7 @@ struct LegacyCommon : Common {
 
     std::string file;
     system_t *m_system;
+    por_t *m_por;
 
     struct Successors {
         typedef Node Type;
@@ -27,11 +31,7 @@ struct LegacyCommon : Common {
         Node _from;
         LegacyCommon *parent;
 
-        int result() {
-            return 0;
-        }
-
-        bool empty() const {
+        bool empty() const __attribute__((pure)) {
             if ( !_from.valid() )
                 return true;
             if ( parent->legacy_system()->is_erroneous( parent->alloc.legacy_state( _from ) ) )
@@ -64,13 +64,42 @@ struct LegacyCommon : Common {
         return succ;
     }
 
+    por_t &por() {
+        if ( !m_por ) {
+            m_por = new por_t;
+            m_por->init( legacy_system() );
+            m_por->set_choose_type( POR_SMALLEST ); // XXX
+        }
+        return *m_por;
+    }
+
+    Successors ample( State s ) {
+        Successors succ;
+        succ.parent = this;
+        succ._from = s;
+        state_t legacy = alloc.legacy_state( s );
+
+        size_t proc_gid; // output parameter, to be discarded
+        por().ample_set_succs( legacy, succ.m_succs, proc_gid );
+        return succ;
+    }
+
     State initial() {
         return alloc.unlegacy_state( legacy_system()->get_initial_state() );
     }
 
+    template< typename Q >
+    void queueInitials( Q &q ) {
+        q.queue( State(), initial() );
+    }
+
     void read( std::string path ) {
-        legacy_system()->read( path.c_str() );
         file = path;
+        legacy_system(); // force
+    }
+
+    bool hasProperty() {
+        return legacy_system()->get_with_property();
     }
 
     void print_state( State s, std::ostream &o = std::cerr ) {
@@ -81,7 +110,6 @@ struct LegacyCommon : Common {
         return legacy_system()->is_accepting( alloc.legacy_state( s ) );
     }
 
-    bool isDeadlock( State s ) { return false; } // XXX
     bool isGoal( State s ) { return false; } // XXX
     std::string showNode( State s ) {
         if ( !s.valid() )
@@ -96,7 +124,8 @@ struct LegacyCommon : Common {
             m_system = new system_t;
             m_system->setAllocator( &alloc );
             if ( !file.empty() ) {
-                m_system->read( file.c_str() );
+                if ( legacy_system()->read( file.c_str() ) ) // don't ask.
+                    throw std::runtime_error( "Error reading input model." );
             }
         }
         return m_system;
@@ -107,8 +136,10 @@ struct LegacyCommon : Common {
     }
 
     LegacyCommon &operator=( const LegacyCommon &other ) {
+        Common::operator=( other );
         file = other.file;
         safe_delete( m_system );
+        safe_delete( m_por );
         legacy_system(); // FIXME, we force read here to keep
                          // dve_explicit_system::read() from happening in
                          // multiple threads at once, no matter the mutex...
@@ -116,11 +147,12 @@ struct LegacyCommon : Common {
     }
 
     LegacyCommon( const LegacyCommon &other )
-        : Common( other ), file( other.file ), m_system( 0 ) {}
-    LegacyCommon() : m_system( 0 ) {}
+        : Common( other ), file( other.file ), m_system( 0 ), m_por( 0 ) {}
+    LegacyCommon() : m_system( 0 ), m_por( 0 ) {}
 
     ~LegacyCommon() {
         safe_delete( m_system );
+        safe_delete( m_por );
     }
 };
 

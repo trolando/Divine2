@@ -3,6 +3,7 @@
 #include <fstream>
 #include <vector>
 
+#include <divine/statistics.h>
 #include <divine/hashmap.h>
 #include <divine/pool.h>
 #include <divine/blob.h>
@@ -15,7 +16,8 @@
 namespace divine {
 namespace visitor {
 
-enum TransitionAction { ExpandTransition, // force expansion on the target state
+enum TransitionAction { TerminateOnTransition,
+                        ExpandTransition, // force expansion on the target state
                         FollowTransition, // expand the target state if it's
                                           // not been expanded yet
                         ForgetTransition, // do not act upon this transition;
@@ -24,10 +26,10 @@ enum TransitionAction { ExpandTransition, // force expansion on the target state
                                           // exist; this also means that the
                                           // target state of the transition is
                                           // NOT FREED
-                        TerminateOnTransition
 };
 
-enum ExpansionAction { ExpandState, TerminateOnState };
+enum ExpansionAction { TerminateOnState, ExpandState };
+enum DeadlockAction { TerminateOnDeadlock, IgnoreDeadlock };
 
 template< typename T >
 inline bool alias( T a, T b ) {
@@ -51,6 +53,7 @@ template<
     typename G, // graph
     typename N, // notify
     typename S = HashMap< typename G::Node, Unit >,
+    typename _Statistics = NoStatistics,
     TransitionAction (N::*tr)(typename G::Node, typename G::Node) = &N::transition,
     ExpansionAction (N::*exp)(typename G::Node) = &N::expansion >
 struct Setup {
@@ -58,6 +61,7 @@ struct Setup {
     typedef N Notify;
     typedef S Seen;
     typedef typename Graph::Node Node;
+    typedef _Statistics Statistics;
 
     static TransitionAction transition( Notify &n, Node a, Node b ) {
         return (n.*tr)( a, b );
@@ -68,25 +72,29 @@ struct Setup {
     }
 
     static void finished( Notify &, Node n ) {}
+    static DeadlockAction deadlocked( Notify &, Node n ) { return IgnoreDeadlock; }
 
-    static TransitionAction transitionHint( Notify &n, Node a, Node b ) {
+    static TransitionAction transitionHint( Notify &n, Node a, Node b, hash_t hint ) {
         return FollowTransition;
     }
 
 };
 
 template<
-    template< typename > class Queue, typename S >
+    template< typename, typename > class Queue, typename S >
 struct Common {
     typedef typename S::Graph Graph;
     typedef typename S::Node Node;
     typedef typename S::Notify Notify;
     typedef typename Graph::Successors Successors;
     typedef typename S::Seen Seen;
+    typedef typename S::Statistics Statistics;
     Graph &m_graph;
     Notify &m_notify;
     Seen *m_seen;
-    Queue< Graph > m_queue;
+    Queue< Graph, Statistics > m_queue;
+
+    int id;
 
     Seen &seen() {
         return *m_seen;
@@ -112,16 +120,31 @@ struct Common {
         processQueue();
     }
 
-    void processQueue() {
-        while ( true ) {
+    void processDeadlocks() {
+        while ( m_queue.deadlocked() ) {
+            Node dead = m_queue.nextFrom();
+            m_queue.removeDeadlocked();
+            if ( S::deadlocked( m_notify, dead ) == TerminateOnDeadlock )
+                return terminate();
+        }
+    }
+
+    void processFinished() {
             while ( m_queue.finished() ) {
                 S::finished( m_notify, m_queue.from() );
                 m_queue.popFinished();
             }
+    }
+
+    void processQueue() {
+        while ( true ) {
+            processFinished();
+            processDeadlocks();
             if ( m_queue.empty() )
                 return;
             std::pair< Node, Node > c = m_queue.next();
             m_queue.pop();
+            processDeadlocks();
             edge( c.first, c.second );
         }
     }
@@ -133,7 +156,7 @@ struct Common {
         bool had = true;
         hash_t hint = seen().hash( _to );
 
-        if ( S::transitionHint( m_notify, from, _to ) == IgnoreTransition )
+        if ( S::transitionHint( m_notify, from, _to, hint ) == IgnoreTransition )
             return;
 
         Node to = seen().get( _to, hint ).key;
@@ -149,6 +172,8 @@ struct Common {
 
         tact = S::transition( m_notify, from, to );
         if ( tact != IgnoreTransition && !had ) {
+            Statistics::global().hashadded( id );
+            Statistics::global().hashsize( id, seen().size() );
             seen().insert( to, hint );
             setPermanent( to );
         }
@@ -164,7 +189,11 @@ struct Common {
             m_graph.release( _to );
 
         if ( tact == TerminateOnTransition || eact == TerminateOnState )
-            clearQueue();
+            terminate();
+    }
+
+    void terminate() {
+        clearQueue();
     }
 
     void clearQueue() {
@@ -178,7 +207,7 @@ struct Common {
     }
 
     Common( Graph &g, Notify &n, Seen *s ) :
-        m_graph( g ), m_notify( n ), m_seen( s ), m_queue( g )
+        m_graph( g ), m_notify( n ), m_seen( s ), m_queue( g ), id( 0 )
     {
         if ( !m_seen )
             m_seen = new Seen();
@@ -186,10 +215,10 @@ struct Common {
 };
 
 template< typename S >
-struct BFV : Common< BufferedQueue, S > {
+struct BFV : Common< Queue, S > {
     typedef typename S::Seen Seen;
     BFV( typename S::Graph &g, typename S::Notify &n, Seen *s = 0 )
-        : Common< BufferedQueue, S >( g, n, s ) {}
+        : Common< Queue, S >( g, n, s ) {}
 };
 
 template< typename S >
@@ -208,17 +237,28 @@ struct Parallel {
     typename S::Notify &notify;
     typename S::Graph &graph;
     typedef typename S::Seen Seen;
+    typedef typename S::Statistics Statistics;
 
     _Hash hash;
     Seen *m_seen;
 
-    int owner( Node n ) const {
-        return hash( n ) % worker.peers();
+    int owner( Node n, hash_t hint = 0 ) const {
+        if ( !hint )
+            return hash( n ) % worker.peers();
+        else
+            return hint % worker.peers();
     }
 
-    void queue( Node from, Node to ) {
-        Fifo< Blob, NoopMutex > &fifo
-            = worker.queue( worker.globalId(), owner( to ) );
+    inline void queue( Node from, Node to, hash_t hint = 0 ) {
+        if ( owner( to, hint ) != worker.globalId() )
+            return;
+        queueAny( from, to, hint );
+    }
+
+    inline void queueAny( Node from, Node to, hash_t hint = 0 ) {
+        int _to = owner( to, hint ), _from = worker.globalId();
+        Fifo< Blob > &fifo = worker.queue( _from, _to );
+        Statistics::global().sent( _from, _to );
         fifo.push( unblob< Node >( from ) );
         fifo.push( unblob< Node >( to ) );
     }
@@ -253,34 +293,52 @@ struct Parallel {
                     }
                     return;
                 }
-                Node f, t;
-                f = worker.fifo.next();
-                worker.fifo.remove();
-                t = worker.fifo.next( true );
-                worker.fifo.remove();
 
-                bfv.edge( unblob< Node >( f ), unblob< Node >( t ) );
+                while ( !worker.fifo.empty() ) {
+                    Node f, t;
+                    f = worker.fifo.next();
+                    worker.fifo.remove();
+                    t = worker.fifo.next( true );
+                    worker.fifo.remove();
+                    int from_id = worker.fifo.m_last - 1; // FIXME m_last?
+                    if ( from_id < 0 )
+                        from_id = owner( f );
+                    Statistics::global().received( from_id, worker.globalId() );
+                    bfv.edge( unblob< Node >( f ), unblob< Node >( t ) );
+                }
+
                 bfv.processQueue();
             }
         }
     }
 
     typedef Parallel< S, Worker, _Hash > P;
-    struct Ours : Setup< typename S::Graph, P, Seen >
+    struct Ours : Setup< typename S::Graph, P, Seen, Statistics >
     {
         typedef typename Setup< typename S::Graph, P, Seen >::Notify Notify;
-        static TransitionAction transitionHint( Notify &n, Node f, Node t ) {
-            if ( n.owner( t ) != n.worker.globalId() ) {
+        static inline TransitionAction transitionHint( Notify &n, Node f, Node t, hash_t hint ) {
+            if ( n.owner( t, hint ) != n.worker.globalId() ) {
                 assert_eq( n.owner( f ), n.worker.globalId() );
-                n.queue( f, t );
+                n.queueAny( f, t, hint );
                 return visitor::IgnoreTransition;
             }
             return visitor::FollowTransition;
         }
+
+        static DeadlockAction deadlocked( P &p, Node n ) {
+            return S::deadlocked( p.notify, n );
+        }
     };
+
+    template< typename T >
+    void setIds( T &bfv ) {
+        bfv.id = worker.globalId();
+        bfv.m_queue.id = worker.globalId();
+    }
 
     void exploreFrom( Node initial ) {
         BFV< Ours > bfv( graph, *this, m_seen );
+        setIds( bfv );
         if ( owner( initial ) == worker.globalId() ) {
             bfv.exploreFrom( unblob< Node >( initial ) );
         }
@@ -289,6 +347,7 @@ struct Parallel {
 
     void processQueue() {
         BFV< Ours > bfv( graph, *this, m_seen );
+        setIds( bfv );
         run( bfv );
     }
 

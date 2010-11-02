@@ -22,6 +22,8 @@
 #include <divine/algorithm/map.h>
 #include <divine/algorithm/nested-dfs.h>
 
+#include <divine/porcp.h>
+
 #include <divine/report.h>
 
 #include <tools/combine.h>
@@ -35,13 +37,11 @@ using namespace divine;
 using namespace wibble;
 using namespace commandline;
 
-struct Preferred {};
-struct NotPreferred { NotPreferred( Preferred ) {} };
-
 Report *report = 0;
 
 void handler( int s ) {
     signal( s, SIG_DFL );
+    Output::output().cleanup();
     if ( report ) {
         report->signal( s );
         report->final( std::cout );
@@ -49,29 +49,21 @@ void handler( int s ) {
     raise( s );
 }
 
-template< typename T >
-typename T::IsDomainWorker mpiSetup( Preferred, Report *r, T &t ) {
-    t.domain().mpi.start();
-    report->mpiInfo( t.domain().mpi );
-    return wibble::Unit();
-}
-
-template< typename T >
-wibble::Unit mpiSetup( NotPreferred, Report *, T & ) {
-    return wibble::Unit();
-}
-
 struct Main {
     Config config;
+    Output *output;
 
     Engine *cmd_reachability, *cmd_owcty, *cmd_ndfs, *cmd_map, *cmd_verify,
         *cmd_metrics, *cmd_compile;
     OptionGroup *common;
-    BoolOption *o_verbose, *o_pool, *o_noCe, *o_dispCe, *o_report, *o_dummy;
-    IntOption *o_workers, *o_mem, *o_initable;
+    BoolOption *o_verbose, *o_pool, *o_noCe, *o_dispCe, *o_report, *o_dummy, *o_statistics;
+    BoolOption *o_por;
+    BoolOption *o_curses;
+    IntOption *o_workers, *o_mem, *o_time, *o_initable;
     StringOption *o_trail;
 
     bool dummygen;
+    bool statistics;
 
     int argc;
     const char **argv;
@@ -80,12 +72,18 @@ struct Main {
     Combine combine;
     Compile compile;
 
+    ~Main() {
+        delete Output::_output; // to clean up after ourselves
+    }
+
     Main( int _argc, const char **_argv )
-        : dummygen( false ), argc( _argc ), argv( _argv ),
+        : dummygen( false ), statistics( false ), argc( _argc ), argv( _argv ),
           opts( "DiVinE", versionString(), 1, "DiVinE Team <divine@fi.muni.cz>" ),
           combine( opts, argc, argv ),
           compile( opts )
     {
+        Output::_output = makeStdIO( std::cerr );
+
         setupSignals();
         setupCommandline();
         parseCommandline();
@@ -97,12 +95,21 @@ struct Main {
 
         Report rep( config );
         report = &rep;
-        rep.start();
-        rep.finished( selectAlgorithm() );
+        Result res;
+
+#ifdef PERFORMANCE
+        if ( statistics )
+            res = selectGraph< Statistics >();
+        else
+            res = selectGraph< NoStatistics >();
+#else
+        res = selectGraph< Statistics >();
+#endif
+        rep.finished( res );
         rep.final( std::cout );
     }
 
-    void die( std::string bla ) __attribute__((noreturn))
+    static void die( std::string bla ) __attribute__((noreturn))
     {
         std::cerr << bla << std::endl;
         exit( 1 );
@@ -125,6 +132,11 @@ struct Main {
 #endif
             signal( i, handler );
         }
+    }
+
+    void setupCurses() {
+        if ( o_curses->boolValue() )
+            Output::_output = makeCurses();
     }
 
     void setupCommandline()
@@ -153,17 +165,23 @@ struct Main {
 
         o_verbose = opts.add< BoolOption >(
             "verbose", 'v', "verbose", "", "more verbose operation" );
+        o_curses = opts.add< BoolOption >(
+            "curses", '\0', "curses", "", "use curses-based progress monitoring" );
+
         o_report = common->add< BoolOption >(
             "report", 'r', "report", "", "output standardised report" );
 
         o_workers = common->add< IntOption >(
             "workers", 'w', "workers", "",
             "number of worker threads (default: 2)" );
-        o_workers ->setValue( 2 );
 
         o_mem = common->add< IntOption >(
             "max-memory", '\0', "max-memory", "",
             "maximum memory to use in MB (default: 0 = unlimited)" );
+
+        o_time = common->add< IntOption >(
+            "max-time", '\0', "max-time", "",
+            "maximum wall time to use in seconds (default: 0 = unlimited)" );
 
         o_pool = common->add< BoolOption >(
             "disable-pool", '\0', "disable-pool", "",
@@ -185,6 +203,14 @@ struct Main {
             "dummy", '\0', "dummy", "",
             "use a \"dummy\" benchmarking model instead of a real input" );
 
+        o_statistics = common->add< BoolOption >(
+            "statistics", 's', "statistics", "",
+            "track communication and hash table load statistics" );
+
+        o_por = common->add< BoolOption >(
+            "por", 'p', "por", "",
+            "enable partial order reduction" );
+
         o_initable = common->add< IntOption >(
             "initial-table", 'i', "initial-table", "",
             "set initial hash table size to 2^n [default = 19]" );
@@ -198,7 +224,43 @@ struct Main {
         cmd_verify->add( common );
     }
 
-    enum { RunMetrics, RunReachability, RunNdfs, RunMap, RunOwcty } m_run;
+    void setupLimits() {
+        if ( o_time->intValue() != 0 ) {
+#ifdef POSIX
+            if ( o_time->intValue() < 0 ) {
+                die( "FATAL: cannot have negative time limit" );
+            }
+            alarm( o_time->intValue() );
+#else
+            die( "FATAL: --max-time is not supported on win32." );
+#endif
+        }
+
+        if ( o_mem->intValue() != 0 ) {
+            if ( o_mem->intValue() < 0 ) {
+                die( "FATAL: cannot have negative memory limit" );
+            }
+            if ( o_mem->intValue() < 16 ) {
+                die( "FATAL: we really need at least 16M of memory" );
+            }
+#ifdef POSIX
+            struct rlimit limit;
+            limit.rlim_cur = limit.rlim_max = o_mem->intValue() * 1024 * 1024;
+            if (setrlimit( RLIMIT_AS, &limit ) != 0) {
+                int err = errno;
+                std::cerr << "WARNING: Could not set memory limit to "
+                          << o_mem->intValue() << "MB. System said: "
+                          << strerror(err) << std::endl;
+            }
+#else
+            std::cerr << "WARNING: Setting memory limit not supported "
+                      << "on this platform."  << std::endl;
+#endif
+        }
+    }
+
+
+    enum { RunMetrics, RunReachability, RunNdfs, RunMap, RunOwcty, RunVerify } m_run;
     bool m_noMC;
 
     void parseCommandline()
@@ -206,8 +268,11 @@ struct Main {
         std::string input;
 
         try {
-            if ( opts.parse( argc, argv ) )
+            if ( opts.parse( argc, argv ) ) {
+                if ( opts.version->boolValue() )
+                    Report::about( std::cout ); // print extra version info
                 exit( 0 ); // built-in command executed
+            }
 
             if ( opts.foundCommand() == combine.cmd_combine
                  || opts.foundCommand() == compile.cmd_compile ) {
@@ -235,34 +300,18 @@ struct Main {
         if ( !opts.foundCommand() )
             die( "FATAL: no command specified" );
 
-        config.setWorkers( o_workers->intValue() );
-        config.setInitialTableSize( 2 << (o_initable->intValue()) );
+        if ( o_workers->boolValue() )
+            config.setWorkers( o_workers->intValue() );
+        else
+            config.setWorkers( 2 );
+
         config.setInput( input );
         config.setVerbose( o_verbose->boolValue() );
         config.setReport( o_report->boolValue() );
         config.setGenerateCounterexample( !o_noCe->boolValue() );
+        statistics = o_statistics->boolValue();
 
-        if ( o_mem->intValue() != 0 ) {
-            if ( o_mem->intValue() < 0 ) {
-                die( "FATAL: cannot have negative memory limit" );
-            }
-            if ( o_mem->intValue() < 16 ) {
-                die( "FATAL: we really need at least 16M of memory" );
-            }
-#ifdef POSIX
-            struct rlimit limit;
-            limit.rlim_cur = limit.rlim_max = o_mem->intValue() * 1024 * 1024;
-            if (setrlimit( RLIMIT_AS, &limit ) != 0) {
-                int err = errno;
-                std::cerr << "WARNING: Could not set memory limit to "
-                          << o_mem->intValue() << "MB. System said: "
-                          << strerror(err) << std::endl;
-            }
-#else
-            std::cerr << "WARNING: Setting memory limit not supported "
-                      << "on this platform."  << std::endl;
-#endif
-        }
+        setupLimits();
 
         if ( o_trail->boolValue() ) {
             if ( o_trail->stringValue() == "" ) {
@@ -282,21 +331,12 @@ struct Main {
             die( "FATAL: cannot open input file " + input + " for reading" );
 
         if ( opts.foundCommand() == cmd_verify ) {
-            std::string inf = fs::readFile( config.input() );
-            if ( inf.find( "system async property" ) != std::string::npos ||
-                 inf.find( "system sync property" ) != std::string::npos ) {
-                // we have a property automaton --> LTL
-                if ( config.workers() > 1 ) {
-                    m_run = RunOwcty;
-                } else {
-                    m_run = RunNdfs;
-                }
-            } else {
-                m_run = RunReachability; // no property
-            }
-        } else if ( opts.foundCommand() == cmd_ndfs )
+            m_run = RunVerify;
+        } else if ( opts.foundCommand() == cmd_ndfs ) {
             m_run = RunNdfs;
-        else if ( opts.foundCommand() == cmd_owcty )
+            if ( !o_workers->boolValue() )
+                config.setWorkers( 1 );
+        } else if ( opts.foundCommand() == cmd_owcty )
             m_run = RunOwcty;
         else if ( opts.foundCommand() == cmd_reachability )
             m_run = RunReachability;
@@ -307,60 +347,108 @@ struct Main {
         else
             die( "FATAL: Internal error in commandline parser." );
 
+        config.setInitialTableSize(
+            ( 1L << (o_initable->intValue()) ) / config.workers() );
+
         if ( config.verbose() ) {
             std::cerr << " === configured options ===" << std::endl;
             config.dump( std::cerr );
         }
     }
 
+    template< typename Graph, typename Stats >
     Result selectAlgorithm()
     {
+        if ( m_run == RunVerify ) {
+            Graph temp;
+            temp.read( config.input() );
+
+            if ( temp.hasProperty() && config.workers() > 1 )
+                m_run = RunOwcty;
+            else {
+                if ( temp.hasProperty() )
+                    m_run = RunNdfs;
+                else
+                    m_run = RunReachability;
+            }
+        }
+
         switch ( m_run ) {
             case RunReachability:
                 config.setAlgorithm( "Reachability" );
-                return selectGraph< algorithm::Reachability >();
+                return run< algorithm::Reachability< Graph, Stats >, Stats >();
             case RunMetrics:
                 config.setAlgorithm( "Metrics" );
-                return selectGraph< algorithm::Metrics >();
+                return run< algorithm::Metrics< Graph, Stats >, Stats >();
             case RunOwcty:
                 config.setAlgorithm( "OWCTY" );
-                return selectGraph< algorithm::Owcty >();
+                return run< algorithm::Owcty< Graph, Stats >, Stats >();
             case RunMap:
                 config.setAlgorithm( "MAP" );
-                return selectGraph< algorithm::Map >();
+                return run< algorithm::Map< Graph, Stats >, Stats >();
             case RunNdfs:
                 config.setAlgorithm( "NestedDFS" );
-                return selectGraph< algorithm::NestedDFS >();
+                return run< algorithm::NestedDFS< Graph, Stats >, Stats >();
             default:
                 die( "FATAL: Internal error choosing algorithm." );
         }
     }
 
-    template< template< typename > class Algorithm >
+    template< typename Stats >
     Result selectGraph()
     {
         if ( str::endsWith( config.input(), ".dve" ) ) {
             config.setGenerator( "DVE" );
-            return run< Algorithm< generator::NDve > >();
+            if ( o_por->boolValue() ) {
+                return selectAlgorithm< algorithm::PORGraph< generator::NDve, Stats >, Stats >();
+            } else {
+                return selectAlgorithm< algorithm::NonPORGraph< generator::NDve >, Stats >();
+            }
+        } else if ( o_por->boolValue() ) {
+            die( "FATAL: Partial order reduction is not supported for this input type." );
         } else if ( str::endsWith( config.input(), ".b" ) ) {
             config.setGenerator( "NIPS" );
-            return run< Algorithm< generator::NBymoc > >();
+            return selectAlgorithm< algorithm::NonPORGraph< generator::NBymoc >, Stats >();
         } else if ( str::endsWith( config.input(), ".so" ) ) {
             config.setGenerator( "Custom" );
-            return run< Algorithm< generator::Custom > >();
+            return selectAlgorithm< algorithm::NonPORGraph< generator::Custom >, Stats >();
         } else if ( dummygen ) {
             config.setGenerator( "Dummy" );
-            return run< Algorithm< generator::Dummy > >();
+            return selectAlgorithm< algorithm::NonPORGraph< generator::Dummy >, Stats >();
         } else
 	    die( "FATAL: Unknown input file extension." );
     }
 
-    template< typename A >
-    Result run() {
-        A alg( &config );
+    template< typename Stats, typename T >
+    typename T::IsDomainWorker setupParallel( Preferred, Report *r, T &t ) {
+        t.domain().mpi.init();
+        if ( t.domain().mpi.master() )
+            setupCurses();
+        Stats::global().useDomain( t.domain() );
+        if ( statistics )
+            Stats::global().start();
+        t.domain().mpi.start();
+        report->mpiInfo( t.domain().mpi );
+        return wibble::Unit();
+    }
 
-        mpiSetup( Preferred(), report, alg );
-        return alg.run();
+    template< typename Stats, typename T >
+    wibble::Unit setupParallel( NotPreferred, Report *, T &t ) {
+        setupCurses();
+        if ( statistics )
+            Stats::global().start();
+        return wibble::Unit();
+    }
+
+    template< typename Algorithm, typename Stats >
+    Result run() {
+        try {
+            Algorithm alg( &config );
+            setupParallel< Stats >( Preferred(), report, alg );
+            return alg.run();
+        } catch (std::exception &e) {
+            die( std::string( "FATAL: " ) + e.what() );
+        }
     }
 
     void noMC() {

@@ -57,8 +57,36 @@ struct Allocator : StateAllocator {
 
 struct Common {
     Allocator alloc;
-    void setSlack( int s ) { alloc.setSlack( s ); }
+    int setSlack( int s ) { alloc.setSlack( s ); return s; }
     Pool &pool() { return alloc.pool(); }
+    bool hasProperty() { return false; }
+};
+
+template< typename G >
+struct Extended {
+    G _g;
+
+    typedef typename G::Node Node;
+    typedef typename G::Successors Successors;
+
+    G &g() { return _g; }
+
+    Node initial() { return g().initial(); }
+    Successors successors( Node st ) { return g().successors( st ); }
+    void release( Node s ) { g().release( s ); }
+    bool isDeadlock( Node s ) { return g().isDeadlock( s ); }
+    bool isGoal( Node s ) { return g().isGoal( s ); }
+    bool isAccepting( Node s ) { return g().isAccepting( s ); }
+    std::string showNode( Node s ) { return g().showNode( s ); }
+    void read( std::string path ) { g().read( path ); }
+    bool hasProperty() { return g().hasProperty(); }
+
+    template< typename Q >
+    void queueInitials( Q &q ) {
+        g().queueInitials( q );
+    }
+
+    int setSlack( int s ) { return g().setSlack( s ); }
 };
 
 }

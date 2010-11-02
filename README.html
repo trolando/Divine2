@@ -55,7 +55,7 @@ above. The most useful invocations are these:</p>
 <ul>
 <li>run reachability on 8 cores:
 <code>./_build/tools/divine reachability -w 8 input.dve</code></li>
-<li>run model checking on 4 cores:
+<li>run LTL model checking on 4 cores:
 <code>./_build/tools/divine owcty -w 4 input-with-property.dve</code></li>
 </ul>
 
@@ -63,6 +63,25 @@ above. The most useful invocations are these:</p>
 distributed with the tool under the <code>examples/</code> directory. These are the files
 prefixed <code>beem-</code>. Many more models are available for download in the BEEM
 repository.</p>
+
+<p>To run DiVinE in a cluster, you can use the usual MPI tools, <code>mpirun</code> or
+<code>mpiexec</code>. For detailed info about these, please consult the documentation of
+your MPI implementation. You may also need to use a batch queue system like PBS
+to run DiVinE on your cluster -- please consult your cluster administrator
+about that.</p>
+
+<p>When running DiVinE on a cluster manually (without any queue management
+system), using machines node1 through node3, each of the nodes using 4 CPU
+cores, you could use the following command:</p>
+
+<pre><code>mpiexec -H node1,node2,node3 ./_build/tools/divine owcty -w 4 model.dve
+</code></pre>
+
+<p>Please note that this assumes that both the divine binary and the model are
+available on all the mentioned cluster nodes, with the same paths (relative to
+your working directory). Your MPI implementation may support binary and input
+preloading, which would let you run DiVinE without a shared (NFS) filesystem as
+well.</p>
 
 <h2>Graphical User Interface</h2>
 
@@ -77,21 +96,6 @@ You can run the interface with:</p>
 you have chosen to install the tool, you should put it on your PATH, and then
 issue <code>divine.ide</code>.</p>
 
-<h2>Known Issues</h2>
-
-<p>Scalability on 64-bit platforms is inferior to scalability on 32-bit
-platforms. If you are running on x86_64 or other similar architecture
-which can run 32-bit binaries natively, you can compile DiVinE in
-32-bit mode:</p>
-
-<pre><code>$ CXXFLAGS=-m32 ./configure
-$ make
-</code></pre>
-
-<p>If you have previously run configure, you may need to delete or move
-the _build directory out of way. However, using 32-bit mode limits the
-size of verifiable models to roughly 3GB.</p>
-
 <h2>Reporting Problems</h2>
 
 <p>The DiVinE project uses Trac for managing problem reports. If you encounter a
@@ -104,9 +108,9 @@ know about the problem). Thanks in advance.</p>
 
 <h2>Obtaining New Versions</h2>
 
-<p>The latest release is always available through <a href="http://divine.fi.muni.cz/">project pages</a>, section
+<p>The latest release is always available through the <a href="http://divine.fi.muni.cz/">project pages</a>, section
 Download. You could also obtain the latest development snapshot through darcs
-(you need version 2.0 or later), which is used for version control:</p>
+(you need darcs version 2.0 or later), which is used for version control:</p>
 
 <pre><code>$ darcs get http://divine.fi.muni.cz/darcs/mainline divine
 </code></pre>

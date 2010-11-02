@@ -1,19 +1,22 @@
 cmake_minimum_required(VERSION 2.4.7)
 project( divine )
 
+set( CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake" )
+
 if(COMMAND cmake_policy)
   cmake_policy(SET CMP0002 OLD) # FIXME
   cmake_policy(SET CMP0003 NEW)
 endif(COMMAND cmake_policy)
 
-if( NOT CMAKE_BUILD_TYPE )
-  set( CMAKE_BUILD_TYPE "Release" )
-endif( NOT CMAKE_BUILD_TYPE )
+if(NOT CMAKE_BUILD_TYPE)
+ set(CMAKE_BUILD_TYPE "Release" CACHE STRING
+     "Choose the type of build, options are: Debug Release RelWithDebInfo MinSizeRel."
+     FORCE)
+endif(NOT CMAKE_BUILD_TYPE)
 
 macro(appendFlag flags value)
   foreach( F ${flags} )
-    set( CMAKE_${F}_FLAGS_${CMAKE_BUILD_TYPE}
-      "${CMAKE_${F}_FLAGS_${CMAKE_BUILD_TYPE}} ${value}" )
+    set( CMAKE_${F}_FLAGS "${CMAKE_${F}_FLAGS} ${value}" )
   endforeach( F )
 endmacro(appendFlag)
 
@@ -24,10 +27,16 @@ option( USE64 "pass -m64 to gcc to force 64b on multiarch" OFF )
 option( USE32 "pass -m32 to gcc to force 32b on multiarch" OFF )
 option( MPI "compile DiVinE with MPI for clustering support" ON )
 option( GUI "compile the Qt GUI" ON )
+option( MURPHI "enable Murphi model compiler" ON )
+option( PERFORMANCE "compile for maximum performance (LONG compilation)" ON )
 
 if( NOT WIN32 )
   add_definitions( -DPOSIX )
 endif( NOT WIN32 )
+
+if( PERFORMANCE )
+  add_definitions( -DPERFORMANCE )
+endif( PERFORMANCE )
 
 if( PROFILE )
   appendFlag( "CXX;C" "-fprofile-arcs -ftest-coverage" )
@@ -36,10 +45,12 @@ endif( PROFILE )
 
 if( USE64 )
   appendFlag( "CXX;C;EXE_LINKER;SHARED_LINKER" "-m64" )
+  add_definitions( -DUSE_GCC_M64 )
 endif( USE64 )
 
 if( USE32 )
   appendFlag( "CXX;C;EXE_LINKER;SHARED_LINKER" "-m32" )
+  add_definitions( -DUSE_GCC_M32 )
 endif( USE32 )
 
 if( NOT POOLS )
@@ -49,6 +60,14 @@ endif( NOT POOLS )
 if( GUI )
   find_package( Qt4 4.5.0 )
 endif( GUI )
+
+if( NOT USE32 AND NOT USE64 )
+  # the curses package we'd find probably wouldn't work anyway
+  find_package( Curses )
+  if( CURSES_FOUND )
+    add_definitions( -DHAVE_CURSES )
+  endif()
+endif()
 
 # on some mingw32, regex.h is not on the default include path
 find_path( RX_PATH regex.h )
@@ -77,20 +96,6 @@ set( DIVINE_INCLUDES
   ${divine_BINARY_DIR}
   ${MPI_INCLUDE_PATH}
   ${divine_SOURCE_DIR}/divine/legacy )
-
-include( CheckCXXSourceCompiles )
-check_cxx_source_compiles(
- "template< typename T > struct A {
-	static const int x = sizeof( T );
-  };
-  struct B {
-        A< B > a;
-  };
-  int main() { return 0; }" TMPL_SIZEOF_WORKS )
-
-if( NOT TMPL_SIZEOF_WORKS )
-  message( FATAL_ERROR "Your C++ compiler apparently does not support language features required by DiVinE. It is recommended that you compile with G++ 4.1 or 4.2." )
-endif( NOT TMPL_SIZEOF_WORKS )
 
 find_program( SHA1SUM sha1sum )
 
@@ -145,6 +150,18 @@ if( HOARD )
   add_subdirectory( hoard )
 endif( HOARD )
 add_subdirectory( lpsolve )
+
+find_program( BYACC "byacc" )
+find_package( FLEX )
+find_package( BYACC )
+
+if( MURPHI AND FLEX_FOUND AND BYACC_FOUND AND BYACC )
+add_subdirectory( murphi )
+add_definitions( -DHAVE_MURPHI )
+else()
+set( MURPHI OFF )
+endif()
+
 add_subdirectory( divine )
 add_subdirectory( tools )
 add_subdirectory( examples )

@@ -12,6 +12,7 @@ namespace divine {
 // class. This is however not a requirement of Barrier itself.
 struct Terminable {
     virtual bool workWaiting() = 0;
+    virtual bool isBusy() = 0;
     bool sleeping;
 
     Terminable() : sleeping( false ) {}
@@ -51,7 +52,7 @@ struct Barrier {
         return m_conditions[ t ];
     }
 
-    bool maybeIdle( T *who, bool really ) {
+    bool maybeIdle( T *who, bool really, bool sleep ) {
         assert( m_expect );
         if ( m_regd < m_expect )
             return false;
@@ -85,7 +86,9 @@ struct Barrier {
         if ( done ) {
             for ( MutexIterator i = m_mutexes.begin(); i != m_mutexes.end(); ++i )
             {
-                if ( i->first->workWaiting() ) {
+                if ( (i->first != who && i->first->isBusy()) ||
+                     i->first->workWaiting() )
+                {
                     busy.insert( i->first );
                     done = false;
                 }
@@ -127,7 +130,7 @@ struct Barrier {
             // and if we have nothing to do ourselves, go to bed... for the
             // "last man" check, we don't go to sleep, just return false right
             // away here
-            if ( !really )
+            if ( !sleep )
                 return false;
 
             if ( !who->workWaiting() ) {
@@ -149,20 +152,20 @@ struct Barrier {
             }
         }
 
-        if ( m_done )
+        if ( m_done && really )
             this->done( who );
         return m_done;
     }
 
-    bool idle( T *who ) {
-        return maybeIdle( who, true );
+    bool idle( T *who, bool sleep = true ) {
+        return maybeIdle( who, true, sleep );
     }
 
     // Returns true if a call to idle( who ) would return true, but *does not
     // perform the actual termination* (ie. a thread can probe whether the rest
     // of the system is idle, without actually becoming idle itself).
-    bool lastMan( T *who ) {
-        bool r = maybeIdle( who, false );
+    bool lastMan( T *who, bool sleep = false ) {
+        bool r = maybeIdle( who, false, sleep );
         return r;
     }
 

@@ -1,7 +1,17 @@
+#include <tools/compile.h>
 #include <tools/dvecompile.h>
 #include <divine/generator/common.h>
 
 using namespace wibble::str;
+
+namespace divine {
+const char *compile_defines_str = "\
+#define assert_eq(a,b) assert(a == b)\n\
+#define assert_neq(a,b) assert(a != b);\n\
+#define assert_leq(a,b) assert(a <= b);\n\
+#define assert_die() assert(false);\n\
+#define BLOB_NO_HASH\n";
+}
 
 void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::string state_name)
 {
@@ -26,7 +36,8 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
     switch (expr.get_operator())
     {
         case T_ID:
-            ostr<<state_name<<".";
+            if (!(parent_table->get_variable(expr.get_ident_gid())->is_const()))
+                ostr<<state_name<<".";
             if(parent_table->get_variable(expr.get_ident_gid())->get_process_gid() != NO_ID)
             {
                 ostr << parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
@@ -50,7 +61,8 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
             ostr << ")";
             break;
         case T_SQUARE_BRACKETS:
-            ostr<<state_name<<".";
+            if (!(parent_table->get_variable(expr.get_ident_gid())->is_const()))
+                ostr<<state_name<<".";
             if(parent_table->get_variable(expr.get_ident_gid())->get_process_gid() != NO_ID)
             {
                 ostr << parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
@@ -117,12 +129,6 @@ std::string dve_compiler::cexpr( dve_expression_t & expr, std::string state )
     return str.str();
 }
 
-namespace divine {
-extern const char *pool_h_str;
-extern const char *circular_h_str;
-extern const char *blob_h_str;
-}
-
 void dve_compiler::gen_header()
 {
     line( "#include <stdio.h>" );
@@ -142,11 +148,7 @@ void dve_compiler::gen_header()
     line( "typedef size_t size_int_t;" );
     line();
 
-    line( "#define assert_eq(a,b) assert(a == b)" );
-    line( "#define assert_neq(a,b) assert(a != b)" );
-    line( "#define assert_leq(a,b) assert(a <= b)" );
-    line( "#define assert_die() assert(false)" );
-    line( "#define BLOB_NO_HASH" );
+    line( compile_defines_str );
 
     line( divine::pool_h_str );
     line();
@@ -155,6 +157,11 @@ void dve_compiler::gen_header()
     line();
 
     line( divine::blob_h_str );
+    line();
+
+    line( "using namespace divine;" );
+
+    line( divine::generator_custom_api_h_str );
     line();
 }
 
@@ -220,7 +227,7 @@ void dve_compiler::gen_state_struct()
                     if (state_creators[i].var_type==VAR_BYTE)
                         line( "byte_t " + name + ";" );
                     else if (state_creators[i].var_type==VAR_INT)
-                        line( "sshort_int_t" + name + ";" );
+                        line( "sshort_int_t " + name + ";" );
                     else gerr << "Unexpected error" << thr();
                 }
             }
@@ -541,12 +548,10 @@ void dve_compiler::transition_effect( ext_transition_t *et, std::string in, std:
 }
 
 void dve_compiler::new_output_state() {
-    if ( many ) {
-        line( "divine::Blob blob_out( *pool, slack + state_size );" );
-        line( "state_struct_t *out = (state_struct_t *)(blob_out.data() + slack);" );
-        line( "blob_out.clear( 0, slack );" );
-        line( "*out = *in;" );
-    }
+    line( "divine::Blob blob_out( *(setup->pool), setup->slack + state_size );" );
+    line( "state_struct_t *out = &blob_out.get< state_struct_t >( setup->slack );" );
+    line( "blob_out.clear( 0, setup->slack );" );
+    line( "*out = *in;" );
 }
 
 void dve_compiler::yield_state() {
@@ -559,6 +564,7 @@ void dve_compiler::yield_state() {
         line( "buf_out->add( blob_out );" );
         line( "++states_emitted;" );
     } else {
+        line( "*to = blob_out;" );
         line( "return " + fmt( current_label ) + ";" );
     }
 }
@@ -576,7 +582,7 @@ void dve_compiler::gen_successors()
             if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
                 if_clause( in_state( i, j, in ) );
 
-    if_end(); block_begin();
+    if_end(); block_begin(); // committed states
 
     for(size_int_t i = 0; i < this->get_process_count(); i++)
     {
@@ -594,7 +600,6 @@ void dve_compiler::gen_successors()
                     if_clause( in_state( i, iter_process_transition_map->first, in ) );
                     if_end(); block_begin();
 
-                    new_output_state();
 
                     for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
                         iter_ext_transition_vector != iter_process_transition_map->second.end();
@@ -606,18 +611,24 @@ void dve_compiler::gen_successors()
                                 get_process(iter_ext_transition_vector->second->get_process_gid()))->
                             get_commited(iter_ext_transition_vector->second->get_state1_lid()) )
                         {
+                            new_label();
+
                             transition_guard( &*iter_ext_transition_vector, in );
                             block_begin();
+                            new_output_state();
                             transition_effect( &*iter_ext_transition_vector, in, out );
+                            yield_state();
                             block_end();
                         }
                     }
 
-                    yield_state();
                     block_end();
                 }
             }
     }
+
+    new_label(); // Trick. : - )
+    line( ";" );
 
     block_end();
     line( "else" );
@@ -690,10 +701,10 @@ void dve_compiler::gen_is_accepting()
     if(!have_property)
         return;
 
-    line( "extern \"C\" bool is_accepting( char *_state, int size )" );
+    line( "extern \"C\" bool is_accepting( CustomSetup *setup, Blob b, int size )" );
     block_begin();
 
-    line( "state_struct_t &state = * (state_struct_t*) _state;" );
+    line( "state_struct_t &state = b.get< state_struct_t >( setup->slack );" );
     for(size_int_t i = 0; i < dynamic_cast<dve_process_t*>(get_process((get_property_gid())))->get_state_count(); i++)
     {
         if (dynamic_cast<dve_process_t*>(get_process((get_property_gid())))->get_acceptance(i, 0, 1) )
@@ -721,21 +732,26 @@ void dve_compiler::print_generator()
     line( "}" );
     line();
 
-    line( "extern \"C\" void get_initial_state( char *to ) {" );
-    line( "    memcpy(to, initial_state, state_size);" );
+    line( "extern \"C\" int setup( CustomSetup *setup ) {" );
+    line( "    setup->state_size = state_size;" );
+    line( "    setup->has_property = " + fmt( get_with_property() ) + ";" );
+    line( "}" );
+
+    line( "extern \"C\" void get_initial( CustomSetup *setup, Blob *out ) {" );
+    line( "    Blob b( *(setup->pool), state_size + setup->slack );" );
+    line( "    memcpy(b.data() + setup->slack, initial_state, state_size);" );
+    line( "    *out = b;" );
     line( "}" );
     line();
 
     many = false;
-    current_label = 0;
+    current_label = 1;
 
     gen_is_accepting();
 
-    line( "extern \"C\" int get_successor( int next_state, char* from, char* to ) " );
+    line( "extern \"C\" int get_successor( CustomSetup *setup, int next_state, Blob from, Blob *to ) " );
     block_begin();
-    line( "state_struct_t *in = (state_struct_t*)from;" );
-    line( "state_struct_t *out = (state_struct_t*)to;" );
-    line( "*out = *in;" );
+    line( "state_struct_t *in = &from.get< state_struct_t >( setup->slack );" );
     line( "bool system_in_deadlock = false;" );
     line( "goto switch_state;" );
 
@@ -755,11 +771,11 @@ void dve_compiler::print_generator()
 
     block_end();
 
-    many = true;
-    current_label = 0;
-
+    // many = true;
+    // current_label = 0;
+#if 0
     line( "extern \"C\" void get_many_successors( int slack, char *_pool, char *," );
-    line( "                                       char *_buf_in, char *_buf_out ) " );
+    line( "                                       char *_buf_in, char *_buf_outf, char *_buf_outs ) " );
     block_begin();
     line( "divine::Pool *pool = (divine::Pool *) _pool;" );
     line( "typedef divine::Circular< divine::Blob, 0 > Buffer;" );
@@ -778,4 +794,5 @@ void dve_compiler::print_generator()
     line( "if ( buf_in->empty() ) return;" );
     line( "goto next;" );
     block_end();
+#endif
 }

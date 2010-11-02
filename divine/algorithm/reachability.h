@@ -14,42 +14,46 @@
 namespace divine {
 namespace algorithm {
 
-template< typename > struct Reachability;
+template< typename, typename > struct Reachability;
 
 // MPI function-to-number-and-back-again drudgery... To be automated.
-template< typename G >
-struct _MpiId< Reachability< G > >
+template< typename G, typename S >
+struct _MpiId< Reachability< G, S > >
 {
-    static int to_id( void (Reachability< G >::*f)() ) {
-        if( f == &Reachability< G >::_visit )
-            return 0;
-        if( f == &Reachability< G >::_parentTrace )
-            return 1;
+    typedef Reachability< G, S > A;
+
+    static int to_id( void (A::*f)() ) {
+        if( f == &A::_visit ) return 0;
+        if( f == &A::_parentTrace ) return 1;
+        if( f == &A::_por) return 7;
+        if( f == &A::_por_worker) return 8;
         assert_die();
     }
 
-    static void (Reachability< G >::*from_id( int n ))()
+    static void (A::*from_id( int n ))()
     {
         switch ( n ) {
-            case 0: return &Reachability< G >::_visit;
-            case 1: return &Reachability< G >::_parentTrace;
+            case 0: return &A::_visit;
+            case 1: return &A::_parentTrace;
+            case 7: return &A::_por;
+            case 8: return &A::_por_worker;
             default: assert_die();
         }
     }
 
     template< typename O >
-    static void writeShared( typename Reachability< G >::Shared s, O o ) {
-        *o++ = s.initialTable;
+    static void writeShared( typename A::Shared s, O o ) {
         o = s.stats.write( o );
+        *o++ = s.initialTable;
         *o++ = s.goal.valid();
         if ( s.goal.valid() )
             o = s.goal.write32( o );
     }
 
     template< typename I >
-    static I readShared( typename Reachability< G >::Shared &s, I i ) {
-        s.initialTable = *i++;
+    static I readShared( typename A::Shared &s, I i ) {
         i = s.stats.read( i );
+        s.initialTable = *i++;
         bool valid = *i++;
         if ( valid ) {
             FakePool fp;
@@ -64,21 +68,25 @@ struct _MpiId< Reachability< G > >
  * A simple parallel reachability analysis implementation. Nothing to worry
  * about here.
  */
-template< typename G >
-struct Reachability : Algorithm, DomainWorker< Reachability< G > >
+template< typename G, typename Statistics >
+struct Reachability : Algorithm, DomainWorker< Reachability< G, Statistics > >
 {
+    typedef Reachability< G, Statistics > This;
     typedef typename G::Node Node;
 
     struct Shared {
         Node goal;
-        Statistics< G > stats;
+        algorithm::Statistics< G > stats;
         G g;
         CeShared< Node > ce;
         int initialTable;
+        bool need_expand;
     } shared;
 
-    Domain< Reachability< G > > &domain() {
-        return DomainWorker< Reachability< G > >::domain();
+    Node goal;
+
+    Domain< This > &domain() {
+        return DomainWorker< This >::domain();
     }
 
     struct Extension {
@@ -94,6 +102,7 @@ struct Reachability : Algorithm, DomainWorker< Reachability< G > >
     visitor::ExpansionAction expansion( Node st )
     {
         shared.stats.addNode( shared.g, st );
+        shared.g.porExpansion( st );
         return visitor::ExpandState;
     }
 
@@ -106,21 +115,37 @@ struct Reachability : Algorithm, DomainWorker< Reachability< G > >
         shared.stats.addEdge();
 
         if ( shared.g.isGoal( t ) ) {
-            shared.stats.goals ++;
             shared.goal = t;
             return visitor::TerminateOnTransition;
         }
 
+        shared.g.porTransition( f, t, 0 );
         return visitor::FollowTransition;
     }
 
-    void _visit() { // parallel
-        typedef visitor::Setup< G, Reachability< G >, Table > VisitorSetup;
+    struct VisitorSetup : visitor::Setup< G, This, Table, Statistics > {
+        static visitor::DeadlockAction deadlocked( This &r, Node n ) {
+            r.shared.goal = n;
+            r.shared.stats.addDeadlock();
+            return visitor::TerminateOnDeadlock;
+        }
+    };
 
+    void _visit() { // parallel
         m_initialTable = &shared.initialTable;
-        visitor::Parallel< VisitorSetup, Reachability< G >, Hasher >
-            vis( shared.g, *this, *this, hasher, &table() );
-        vis.exploreFrom( shared.g.initial() );
+        visitor::Parallel< VisitorSetup, This, Hasher >
+            visitor( shared.g, *this, *this, hasher, &table() );
+        shared.g.queueInitials( visitor );
+        visitor.processQueue();
+    }
+
+    void _por_worker() {
+        shared.g._porEliminate( *this, hasher, table() );
+    }
+
+    void _por() {
+        if ( shared.g.porEliminate( domain(), *this ) )
+            shared.need_expand = true;
     }
 
     Reachability( Config *c = 0 )
@@ -128,7 +153,7 @@ struct Reachability : Algorithm, DomainWorker< Reachability< G > >
     {
         initGraph( shared.g );
         if ( c ) {
-            becomeMaster( &shared, workerCount( c ) );
+            this->becomeMaster( &shared, workerCount( c ) );
             shared.initialTable = c->initialTableSize();
         }
     }
@@ -144,26 +169,34 @@ struct Reachability : Algorithm, DomainWorker< Reachability< G > >
         ce.linear( domain(), *this );
     }
 
-    Result run() {
-        std::cerr << "  searching... \t" << std::flush;
-
-        domain().parallel().run( shared, &Reachability< G >::_visit );
-
-        for ( int i = 0; i < domain().peers(); ++i )
-            shared.stats.merge( domain().shared( i ).stats );
-
-        std::cerr << shared.stats.states << " states, "
-                  << shared.stats.transitions << " edges" << std::endl;
-
-        Node goal;
-
+    void collect() {
         for ( int i = 0; i < domain().peers(); ++i ) {
             Shared &s = domain().shared( i );
-            if ( s.goal.valid() ) {
+            shared.stats.merge( s.stats );
+            if ( s.goal.valid() )
                 goal = s.goal;
-                break;
-            }
         }
+    }
+
+    Result run() {
+        progress() << "  searching... \t" << std::flush;
+
+        domain().parallel().run( shared, &This::_visit );
+        collect();
+
+        while ( !goal.valid() ) {
+            shared.need_expand = false;
+            domain().parallel().runInRing( shared, &This::_por );
+
+            if ( shared.need_expand ) {
+                domain().parallel().run( shared, &This::_visit );
+                collect();
+            } else
+                break;
+        }
+
+        progress() << shared.stats.states << " states, "
+                   << shared.stats.transitions << " edges" << std::endl;
 
         safetyBanner( !goal.valid() );
         if ( goal.valid() )

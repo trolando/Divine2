@@ -2,6 +2,7 @@
 #include <wibble/test.h> // assert
 #include <wibble/sfinae.h>
 #include <divine/circular.h>
+#include <divine/statistics.h>
 
 #include <deque>
 
@@ -56,28 +57,58 @@ fillCircular( G &g, C1 &in, C2 &out )
     return fillCircularTedious( g, in, out );
 }
 
-template< typename Graph >
+template< typename Graph, typename Statistics >
 struct Queue {
     Graph &g;
     typedef typename Graph::Node Node;
     std::deque< Node > m_queue;
     typename Graph::Successors m_head;
+    bool maybe_deadlock;
+
+    int id;
 
     void pushSuccessors( const Node &t )
     {
+        Statistics::global().enqueue( id );
         m_queue.push_back( t );
     }
 
     void pop() {
         m_head = m_head.tail();
-        checkHead();
+        maybe_deadlock = false;
+        if ( m_head.empty() && !m_queue.empty() )
+            dropEmptyHead();
+    }
+
+    inline bool deadlocked() {
+        if (m_head.empty() && !m_queue.empty() && !maybe_deadlock)
+            dropEmptyHead();
+        return maybe_deadlock && m_head.empty();
+    }
+
+    void removeDeadlocked() {
+        assert( m_head.empty() );
+        if ( !m_queue.empty() )
+            dropEmptyHead();
+        else
+            maybe_deadlock = false;
+    }
+
+    Node nextFrom() {
+        return m_head.from();
     }
 
     void checkHead() {
-        while ( m_head.empty() && !m_queue.empty() ) {
-            m_head = g.successors( m_queue.front() );
-            m_queue.pop_front();
-        }
+        while ( m_head.empty() && !m_queue.empty() )
+            dropEmptyHead();
+    }
+
+    void dropEmptyHead() {
+        assert( m_head.empty() && !m_queue.empty() );
+        Statistics::global().dequeue( id );
+        m_head = g.successors( m_queue.front() );
+        maybe_deadlock = true;
+        m_queue.pop_front();
     }
 
     std::pair< Node, Node > next() {
@@ -97,10 +128,10 @@ struct Queue {
     void popFinished() {}
     Node from() { return Node(); }
 
-    Queue( Graph &_g ) : g( _g ) {}
+    Queue( Graph &_g ) : g( _g ), maybe_deadlock( false ), id( 0 ) {}
 };
 
-template< typename Graph >
+template< typename Graph, typename Statistics >
 struct BufferedQueue {
     typedef typename Graph::Node Node;
     Circular< Node, 256 > m_in;
@@ -154,7 +185,7 @@ struct BufferedQueue {
     BufferedQueue( Graph &_g ) : g( _g ) {}
 };
 
-template< typename Graph >
+template< typename Graph, typename Statistics >
 struct Stack {
     Graph &g;
     typedef typename Graph::Node Node;
@@ -213,6 +244,12 @@ struct Stack {
     void clear() { while ( !empty() ) pop(); }
 
     Stack( Graph &_g ) : g( _g ) { pushes = pops = 0; }
+
+    bool deadlocked() { return false; }
+    bool removeDeadlocked() { return false; }
+    Node nextFrom() {
+        return m_stack.back().from();
+    }
 };
 
 template< typename T >

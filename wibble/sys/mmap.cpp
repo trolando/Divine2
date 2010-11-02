@@ -66,9 +66,9 @@ MMap::MMap(const MMap& mmap)
 MMap& MMap::operator=(const MMap& mmap)
 {
 	// Handle assignment to self
-	if (this == &mmap);
+	if (this == &mmap)
 		return *this;
-	
+
 	if (fd) unmap();
 
 	filename = mmap.filename;
@@ -82,6 +82,8 @@ MMap& MMap::operator=(const MMap& mmap)
 	wm->size = 0;
 	wm->fd = -1;
 	wm->buf = 0;
+
+	return *this;
 }
 
 MMap::~MMap()
