@@ -22,7 +22,9 @@
 
 #include <string.h>			// strdup
 #include <unistd.h>			// execve
+#ifndef __APPLE__
 #include <malloc.h> // alloca on win32 seems to live there
+#endif
 #include <iostream>
 
 extern char **environ;

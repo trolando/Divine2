@@ -5,7 +5,9 @@
 #include <fstream>
 #include <sys/stat.h>
 #include <errno.h>
+#ifndef __APPLE__
 #include <malloc.h> // alloca on win32 seems to live there
+#endif
 
 namespace wibble {
 namespace sys {
