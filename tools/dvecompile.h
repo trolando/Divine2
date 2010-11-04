@@ -18,10 +18,13 @@ struct ext_transition_t
     dve_transition_t *first;
     dve_transition_t *second; //only when first transition is synchronized;
     dve_transition_t *property; // transition of property automaton
+    std::vector<int> sv_read;
+    std::vector<int> sv_write;
 };
 
 struct dve_compiler: public dve_explicit_system_t
 {
+    bool ltsmin;
     bool many;
     int current_label;
 
@@ -60,11 +63,16 @@ struct dve_compiler: public dve_explicit_system_t
         outline();
     }
 
-    dve_compiler(error_vector_t & evect=gerr)
-        : explicit_system_t(evect), dve_explicit_system_t(evect), current_label(1), m_indent( 0 )
+    dve_compiler(bool ltsmin, error_vector_t & evect=gerr)
+        : explicit_system_t(evect), dve_explicit_system_t(evect), current_label(0), m_indent( 0 ), ltsmin(ltsmin)
     {}
     virtual ~dve_compiler() {}
 
+    int  count_state_variables();
+    void analyse_expression( dve_expression_t & expr, ext_transition_t &ext_transition, std::vector<int> &dep );
+    void output_dependency_comment( ext_transition_t &ext_transition );
+    void mark_dependency ( size_int_t gid, int type, int idx, std::vector<int> &dep);
+    void analyse_transition_dependencies( ext_transition_t &ext_transition );
     void analyse_transition( dve_transition_t * transition,
                              vector<ext_transition_t> &ext_transition_vector );
     void analyse();
@@ -127,15 +135,15 @@ struct dve_compiler: public dve_explicit_system_t
     }
 
     std::string process_state( int i, std::string state ) {
-        return state + "." + process_name( i ) + ".state";
+        return state + "." + process_name( i ) + ".state" + (ltsmin?".var":"");
     }
 
     std::string channel_items( int i, std::string state ) {
-        return state + "." + channel_name( i ) + ".number_of_items";
+        return state + "." + channel_name( i ) + ".number_of_items" + (ltsmin?".var":"");
     }
 
     std::string channel_item_at( int i, std::string pos, int x, std::string state ) {
-        return state + "." + channel_name( i ) + ".content[" + pos + "].x" + wibble::str::fmt( x );
+        return state + "." + channel_name( i ) + ".content[" + pos + "].x" + wibble::str::fmt( x ) + (ltsmin?".var":"");
     }
 
     int channel_capacity( int i ) {
@@ -177,10 +185,13 @@ struct dve_compiler: public dve_explicit_system_t
     void new_output_state();
 
     void gen_successors();
+    void gen_ltsmin_successors();
     void gen_is_accepting();
     void gen_header();
     void gen_state_struct();
     void gen_initial_state();
+    void gen_state_info();
+    void gen_transition_info();
 
     void print_generator();
 };

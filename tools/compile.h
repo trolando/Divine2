@@ -3,7 +3,6 @@
 #include <wibble/commandline/parser.h>
 #include <wibble/string.h>
 #include "dvecompile.h"
-#include <wibble/sys/fs.h>
 
 namespace divine {
 
@@ -16,8 +15,16 @@ extern const char *compile_defines_str;
 using namespace wibble;
 
 struct Compile {
+    commandline::BoolOption *o_ltsmin;
     commandline::Engine *cmd_compile;
     commandline::StandardParserWithMandatoryCommand &opts;
+
+    void die_help( std::string bla )
+    {
+        opts.outputHelp( std::cerr );
+        die( bla );
+    }
+
 
     void die( std::string bla ) __attribute__((noreturn))
     {
@@ -48,8 +55,8 @@ struct Compile {
         run( cmd.str() );
     }
 
-    void compileDve( std::string in ) {
-        dve_compiler compiler;
+    void compileDve( std::string in, bool ltsmin ) {
+        dve_compiler compiler(ltsmin);
         compiler.read( in.c_str() );
         compiler.analyse();
 
@@ -58,20 +65,29 @@ struct Compile {
         compiler.setOutput( out );
         compiler.print_generator();
 
-        gplusplus( outfile, str::basename( in ) + ".so" );
+        if (ltsmin) {
+            gplusplus( outfile, str::basename( in ) + "2C" );
+        } else {
+            gplusplus( outfile, str::basename( in ) + ".so" );
+        }
     }
 
     void compileMurphi( std::string in );
 
     void main() {
+        if ( !opts.hasNext() )
+            die_help( "FATAL: No input file specified." );
         std::string input = opts.next();
+
         if ( access( input.c_str(), R_OK ) )
             die( "FATAL: cannot open input file " + input + " for reading" );
-        if ( str::endsWith( input, ".dve" ) )
-            compileDve( input );
-        else if ( str::endsWith( input, ".m" ) )
+        if ( str::endsWith( input, ".dve" ) ) {
+            compileDve( input, o_ltsmin->boolValue() );
+#ifdef HAVE_MURPHI
+        } else if ( str::endsWith( input, ".m" ) ) {
             compileMurphi( input );
-        else {
+#endif
+        } else {
             std::cerr << "Do not know how to compile this file type." << std::endl;
         }
     }
@@ -82,6 +98,10 @@ struct Compile {
         cmd_compile = _opts.addEngine( "compile",
                                        "<input>",
                                        "model compiler");
+        o_ltsmin = cmd_compile->add< commandline::BoolOption >(
+            "ltsmin", 'l', "ltsmin", "",
+            "ltsmin interface" );
+
     }
 
 };

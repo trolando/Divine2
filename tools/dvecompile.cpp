@@ -45,12 +45,14 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
                 ostr<<".";
             }
             ostr << parent_table->get_variable(expr.get_ident_gid())->get_name();
+            if (ltsmin) ostr << ".var";
             break;
         case T_FOREIGN_ID:
             ostr << parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
                                               get_process_gid())->get_name(); //name of process
             ostr<<"->";
             ostr << parent_table->get_variable(expr.get_ident_gid())->get_name();
+            if (ltsmin) ostr << ".var";
             break;
         case T_NAT:
             ostr << expr.get_value();
@@ -71,6 +73,7 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
             }
             ostr << parent_table->get_variable(expr.get_ident_gid())->
                 get_name(); ostr<<"["; write_C(*expr.left(), ostr, state_name); ostr<<"]" ;
+            if (ltsmin) ostr << ".var";
             break;
         case T_FOREIGN_SQUARE_BRACKETS:
             ostr << parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
@@ -78,6 +81,7 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
             ostr<<"->";
             ostr << parent_table->get_variable(expr.get_ident_gid())->get_name();
             ostr<<"["; write_C(*expr.left(), ostr, state_name); ostr<<"]";
+            if (ltsmin) ostr << ".var";
             break;
 
         case T_LT: case T_LEQ: case T_EQ: case T_NEQ: case T_GT: case T_GEQ:
@@ -92,7 +96,7 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
         case T_DOT:
             ostr<<state_name<<".";
             ostr<<parent_table->get_process(parent_table->get_state(expr.get_ident_gid())->
-                                            get_process_gid())->get_name(); ostr<<".state"<<" == ";
+                                            get_process_gid())->get_name(); ostr<<".state"<<(ltsmin?".var":"")<<" == ";
             ostr<<parent_table->get_state(expr.get_ident_gid())->get_lid();
             break;
 
@@ -136,33 +140,75 @@ void dve_compiler::gen_header()
     line( "#include <stdint.h>" );
     line();
 
-    line( "typedef uint64_t ulong_long_int_t;" );
-    line( "typedef int64_t slong_long_int_t;" );
-    line( "typedef uint32_t ulong_int_t;" );
-    line( "typedef int32_t slong_int_t;" );
-    line( "typedef uint16_t ushort_int_t;" );
-    line( "typedef int16_t sshort_int_t;" );
-    line( "typedef uint8_t byte_t;" );
-    line( "typedef uint8_t ubyte_t;" );
-    line( "typedef int8_t sbyte_t;" );
-    line( "typedef size_t size_int_t;" );
-    line();
+    if (ltsmin) {
+        // note: everything is 32 bit, this introduces a bug
+        // for example when byte value should wrap, now it doesn't
+        // thus it should be a 32 bit aligned byte instead of a 32 bit int
+        line( "typedef uint64_t ulong_long_int_t;" );
+        line( "typedef int64_t slong_long_int_t;" );
+        line( "typedef uint32_t ulong_int_t;" );
+        line( "typedef int32_t slong_int_t;" );
+        line( "typedef union" );
+        line( "{" );
+        line( "    uint16_t var;" );
+        line( "    uint32_t __padding__;" );
+        line( "} ushort_int_t;" );
+        line( "typedef union" );
+        line( "{" );
+        line( "    int16_t var;" );
+        line( "    uint32_t __padding__;" );
+        line( "} sshort_int_t;" );
+        line( "typedef union" );
+        line( "{" );
+        line( "    uint8_t var;" );
+        line( "    uint32_t __padding__;" );
+        line( "} ubyte_t;" );
+        line( "typedef ubyte_t byte_t;" );
+        line( "typedef union" );
+        line( "{" );
+        line( "    int8_t var;" );
+        line( "    uint32_t __padding__;" );
+        line( "} sbyte_t;" );
+        line( "typedef size_t size_int_t;" );
+        line();
+        line( "typedef struct transition_info" );
+        line( "{" );
+        line( "    int* label;" );
+        line( "    int  group;" );
+        line( "} transition_info_t;" );
+        line();
+    } else {
+        line( "typedef uint64_t ulong_long_int_t;" );
+        line( "typedef int64_t slong_long_int_t;" );
+        line( "typedef uint32_t ulong_int_t;" );
+        line( "typedef int32_t slong_int_t;" );
+        line( "typedef uint16_t ushort_int_t;" );
+        line( "typedef int16_t sshort_int_t;" );
+        line( "typedef uint8_t byte_t;" );
+        line( "typedef uint8_t ubyte_t;" );
+        line( "typedef int8_t sbyte_t;" );
+        line( "typedef size_t size_int_t;" );
+        line();
+    }
 
     line( compile_defines_str );
+    if (ltsmin) {
+        line();
+    } else {
+        line( divine::pool_h_str );
+        line();
 
-    line( divine::pool_h_str );
-    line();
+        line( divine::circular_h_str );
+        line();
 
-    line( divine::circular_h_str );
-    line();
+        line( divine::blob_h_str );
+        line();
 
-    line( divine::blob_h_str );
-    line();
+        line( "using namespace divine;" );
 
-    line( "using namespace divine;" );
-
-    line( divine::generator_custom_api_h_str );
-    line();
+        line( divine::generator_custom_api_h_str );
+        line();
+    }
 }
 
 void dve_compiler::gen_state_struct()
@@ -187,14 +233,19 @@ void dve_compiler::gen_state_struct()
                 if ( var->get_init_expr_count() ) append( " = {" );
                 for (size_int_t j=0; j!=var->get_init_expr_count(); j++)
                 {
-                    append( var->get_init_expr(j)->to_string() );
+                    if (ltsmin) append("{");
+                    append( cexpr( *((dve_expression_t*)var->get_init_expr(j)), "") );
+                    if (ltsmin) append("}");
                     if (j!=(var->get_init_expr_count()-1))
                         append( ", " );
                     else
                         append( "}" );
                 }
             } else if ( var->get_init_expr() ) {
-                append( string( " = " ) + var->get_init_expr()->to_string() );
+                append( string( " = " ) );
+                if (ltsmin) append(" {");
+                append( cexpr( *((dve_expression_t*) var->get_init_expr()), "") );
+                if (ltsmin) append("}");
             }
             line( ";" );
         }
@@ -219,7 +270,7 @@ void dve_compiler::gen_state_struct()
                         append( "byte_t " );
                     else if (state_creators[i].var_type==VAR_INT)
                         append( "sshort_int_t " );
-                    else gerr << "Unexpected error" << thr();
+                    else gerr << "Unexpected error generating state struct array" << thr();
                     line( name + "[" + fmt( state_creators[i].array_size ) + "];" );
                 }
                 else
@@ -268,14 +319,14 @@ void dve_compiler::gen_state_struct()
                         line( "byte_t x" + fmt( j ) + ";" );
                     else if (symbol->get_channel_type_list_item(j)==VAR_INT)
                         line( "sshort_int_t x" + fmt( j ) + ";" );
-                    else gerr << "Unexpected error" << thr();
+                    else gerr << "Unexpected error generating state struc channel" << thr();
                 block_end();
                 line( "content[" + fmt( symbol->get_channel_buffer_size() ) + "];" );
                 block_end();
                 line( "__attribute__((__packed__)) " + name + ";" );
             }
             break;
-            default: gerr << "Unexpected error" << thr();
+            default: gerr << "Unexpected error generating state struct" << thr();
                 break;
         };
     }
@@ -294,17 +345,296 @@ void dve_compiler::gen_state_struct()
 
 void dve_compiler::gen_initial_state()
 {
-    setAllocator( new generator::Allocator );
-    state_t initial_state =  dve_explicit_system_t::get_initial_state();
-    append( "char initial_state[] = {" );
-    for(int i = 0; i < initial_state.size; i++)
-    {
-        append( fmt( (unsigned int)(unsigned char)initial_state.ptr[i] ) );
-        if(i != initial_state.size - 1)
-            append( ", " );
+    if (!ltsmin) {
+        setAllocator( new generator::Allocator );
+        state_t initial_state =  dve_explicit_system_t::get_initial_state();
+        append( "char initial_state[] = {" );
+        for(int i = 0; i < initial_state.size; i++)
+        {
+            append( fmt( (unsigned int)(unsigned char)initial_state.ptr[i] ) );
+            if(i != initial_state.size - 1)
+                append( ", " );
+        }
+        line( "};" );
+        line();
+    } else {
+
+        char sep[2] = "";
+        char buf[10];
+        append( "state_struct_t initial_state = { " );
+        for (size_int_t i=0; i!=state_creators_count; ++i)
+        {
+            switch (state_creators[i].type)
+            {
+                case state_creator_t::VARIABLE:
+                {
+                    if (state_creators[i].array_size)
+                    {
+                         for(size_int_t j=0; j<state_creators[i].array_size; j++)
+                         {
+                            append(sep); sprintf(sep,",");
+                            sprintf(buf, "%d", (initial_values_counts[state_creators[i].gid]?
+                                                initial_values[state_creators[i].gid].all_values[j]:0));
+                            append(buf);
+                         }
+                    }
+                    else
+                    {
+                            append(sep); sprintf(sep,",");
+                            sprintf(buf, "%d", (initial_values_counts[state_creators[i].gid]?
+                                                initial_values[state_creators[i].gid].all_value:0));
+                            append(buf);
+                    }
+                }
+                break;
+                case state_creator_t::PROCESS_STATE:
+                {
+                    append(sep); sprintf(sep,",");
+                    sprintf(buf, "%zu", initial_states[state_creators[i].gid]);
+                    append(buf);
+                }
+                break;
+                case state_creator_t::CHANNEL_BUFFER:
+                {
+                    // initialize channel to 0
+                    append(sep); sprintf(sep,",");
+                    append("0"); // number_of_items 
+
+                    dve_symbol_t * symbol =
+                        get_symbol_table()->get_channel(state_creators[i].gid);
+                    size_int_t item_count = symbol->get_channel_type_list_size();
+                    size_int_t chan_size = symbol->get_channel_buffer_size();
+                    for(size_int_t i=0; i < chan_size; ++i) {
+                        for (size_int_t j=0; j<item_count; ++j) {
+                            append(sep);
+                            append("0");
+                        }
+                    }
+                }
+                break;
+                default: gerr << "Unexpected error generating initial state" << thr();
+                    break;
+            };
+        }
+        line( " };" );
+        line();
     }
-    line( "};" );
+}
+
+void dve_compiler::output_dependency_comment( ext_transition_t &ext_transition )
+{
+    // only for ltsmin
+    if (!ltsmin)
+        return;
+
+    int count = count_state_variables();
+    char buf[1024];
+
+    append("// read : " );
+    for(size_int_t i = 0; i < count; i++)
+    {
+        sprintf(buf, "%s%d", ((i==0)?"":","), ext_transition.sv_read[i]);
+        append(buf);
+    }
     line();
+
+    append("// write: " );
+    for(size_int_t i = 0; i < count; i++)
+    {
+        sprintf(buf, "%s%d", ((i==0)?"":","), ext_transition.sv_write[i]);
+        append(buf);
+    }
+    line();
+}
+
+void dve_compiler::analyse_expression( dve_expression_t & expr, ext_transition_t &ext_transition, std::vector<int> &dep)
+{
+    dve_symbol_table_t * parent_table = expr.get_symbol_table();
+    if (!parent_table) gerr << "Writing expression: Symbol table not set" << thr();
+    switch (expr.get_operator())
+    {
+        case T_ID:
+            //if (!(parent_table->get_variable(expr.get_ident_gid())->is_const())) // should this be here?
+            mark_dependency(expr.get_ident_gid(), state_creator_t::VARIABLE, -1, dep);
+            break;
+        case T_FOREIGN_ID:
+            mark_dependency(expr.get_ident_gid(), state_creator_t::VARIABLE, -1, dep);
+            break;
+        case T_NAT:
+            break;
+        case T_PARENTHESIS:
+            analyse_expression(*expr.left(), ext_transition, dep);
+            break;
+        case T_FOREIGN_SQUARE_BRACKETS:
+        case T_SQUARE_BRACKETS:
+            if ((*expr.left()).get_operator() == T_NAT)
+            {
+                mark_dependency(expr.get_ident_gid(), state_creator_t::VARIABLE, (*expr.left()).get_value(), dep);
+            } else {
+                // some expression, mark all & continue analysis
+                mark_dependency(expr.get_ident_gid(), state_creator_t::VARIABLE, -1, dep);
+                analyse_expression(*expr.left(), ext_transition, dep);
+            }
+            break;
+        case T_LT: case T_LEQ: case T_EQ: case T_NEQ: case T_GT: case T_GEQ:
+        case T_PLUS: case T_MINUS: case T_MULT: case T_DIV: case T_MOD:
+        case T_AND: case T_OR: case T_XOR: case T_LSHIFT: case T_RSHIFT:
+        case T_BOOL_AND: case T_BOOL_OR:
+            analyse_expression( *expr.left(), ext_transition, ext_transition.sv_read );
+            analyse_expression( *expr.right(), ext_transition, ext_transition.sv_read );
+            break;
+        case T_ASSIGNMENT:
+            analyse_expression( *expr.left(), ext_transition, ext_transition.sv_write );
+            analyse_expression( *expr.right(), ext_transition, ext_transition.sv_read );
+            break;
+        case T_DOT:
+            // dot addes an explicit == (see code), thus must be read
+            mark_dependency(parent_table->get_state(expr.get_ident_gid())->get_process_gid(),
+                            state_creator_t::PROCESS_STATE, -1, ext_transition.sv_read);
+            break;
+        case T_IMPLY:
+            analyse_expression( *expr.left(), ext_transition, dep );
+            analyse_expression( *expr.right(), ext_transition, dep );
+            break;
+        case T_UNARY_MINUS:
+            analyse_expression( *expr.right(), ext_transition, dep);
+            break;
+        case T_TILDE:
+            analyse_expression( *expr.right(), ext_transition, dep );
+            break;
+        case T_BOOL_NOT:
+            analyse_expression( *expr.right(), ext_transition, dep );
+            break;
+        default:
+            gerr << "Problem in expression - unknown operator"
+                 << " number " << expr.get_operator() << psh();
+    }
+}
+
+void dve_compiler::analyse_transition_dependencies( ext_transition_t &ext_transition )
+{
+    // only for ltsmin
+    if (!ltsmin)
+        return;
+
+    // initialize read/write dependency vector
+    int count = count_state_variables();
+    ext_transition.sv_read.resize(count);
+    ext_transition.sv_write.resize(count);
+
+    // guard
+
+    // mark process as read
+    mark_dependency(ext_transition.first->get_process_gid(),
+                    state_creator_t::PROCESS_STATE, -1, ext_transition.sv_read);
+
+    if (ext_transition.first->get_guard())
+    analyse_expression( *(ext_transition.first->get_guard()), ext_transition,
+                        ext_transition.sv_read);
+
+    if (ext_transition.synchronized)
+    {
+        // mark process as read
+        mark_dependency(ext_transition.second->get_process_gid(),
+                        state_creator_t::PROCESS_STATE, -1, ext_transition.sv_read);
+
+        // analyse ext_transition->second->get_guard
+        if (ext_transition.second->get_guard())
+            analyse_expression( *(ext_transition.second->get_guard()), ext_transition,
+            ext_transition.sv_read);
+    } else {
+        int sm = ext_transition.first->get_sync_mode();
+        if (sm == SYNC_EXCLAIM_BUFFER || sm == SYNC_ASK_BUFFER)
+        {
+            mark_dependency(ext_transition.first->get_channel_gid(),
+                            state_creator_t::CHANNEL_BUFFER, -1, ext_transition.sv_read);
+        }
+    }
+
+    if (have_property) // doesn't work for ltsmin, but mark anyway
+    {
+        // mark process as read/write?
+        mark_dependency(ext_transition.property->get_process_gid(),
+                        state_creator_t::PROCESS_STATE, -1, ext_transition.sv_write);
+
+        // analyse ext_transition->property->get_guard
+        if (ext_transition.property->get_guard())
+            analyse_expression( *(ext_transition.property->get_guard()), ext_transition,
+            ext_transition.sv_read);
+    }
+
+    // effect
+    // todo: synchronized & channel effects...
+    if (ext_transition.synchronized)
+    {
+        for(size_int_t s = 0;s < ext_transition.first->get_sync_expr_list_size();s++)
+        {
+            // todo: test  :)
+            analyse_expression( *(ext_transition.first->get_sync_expr_list_item(s)), ext_transition,
+                                ext_transition.sv_write);
+            analyse_expression( *(ext_transition.second->get_sync_expr_list_item(s)), ext_transition,
+                                ext_transition.sv_read);
+        }
+    } else {
+        int sm = ext_transition.first->get_sync_mode();
+        if (sm == SYNC_EXCLAIM_BUFFER)
+        {
+            // mark entire channel
+            mark_dependency(ext_transition.first->get_channel_gid(),
+                            state_creator_t::CHANNEL_BUFFER, -1, ext_transition.sv_write);
+            // mark sync expressions
+            for(size_int_t s = 0;s < ext_transition.first->get_sync_expr_list_size();s++)
+            {
+                analyse_expression( *(ext_transition.first->get_sync_expr_list_item(s)), ext_transition,
+                                    ext_transition.sv_read);
+            }
+        }
+        if (sm == SYNC_ASK_BUFFER)
+        {
+            // mark entire channel
+            mark_dependency(ext_transition.first->get_channel_gid(),
+                            state_creator_t::CHANNEL_BUFFER, -1, ext_transition.sv_read);
+            mark_dependency(ext_transition.first->get_channel_gid(),
+                            state_creator_t::CHANNEL_BUFFER, -1, ext_transition.sv_write);
+            // mark sync expressions
+            for(size_int_t s = 0;s < ext_transition.first->get_sync_expr_list_size();s++)
+            {
+                analyse_expression( *(ext_transition.first->get_sync_expr_list_item(s)), ext_transition,
+                                    ext_transition.sv_write);
+            }
+
+        }
+
+    }
+
+    // mark process as read (write is probably in transition effect)
+    mark_dependency(ext_transition.first->get_process_gid(),
+                    state_creator_t::PROCESS_STATE, -1, ext_transition.sv_write);
+
+    // analyse ext_transition->first
+    for(size_int_t e = 0;e < ext_transition.first->get_effect_count();e++)
+        analyse_expression( *(ext_transition.first->get_effect(e)), ext_transition,
+        ext_transition.sv_read);
+
+    // analyse ext_transition->second?
+    if (ext_transition.synchronized)
+    {
+        // mark process as read (write is probably in transition effect)
+        mark_dependency(ext_transition.second->get_process_gid(),
+                        state_creator_t::PROCESS_STATE, -1, ext_transition.sv_write);
+
+        // analyse ext_transition->second
+        for(size_int_t e = 0;e < ext_transition.second->get_effect_count();e++)
+            analyse_expression( *(ext_transition.second->get_effect(e)), ext_transition,
+            ext_transition.sv_read);
+    }
+
+    if (have_property) // doesn't work for ltsmin, but mark anyway
+    {
+        // mark process as read/write?
+        mark_dependency(ext_transition.property->get_process_gid(),
+                        state_creator_t::PROCESS_STATE, -1, ext_transition.sv_write);
+    }
 }
 
 void dve_compiler::analyse_transition(
@@ -320,6 +650,7 @@ void dve_compiler::analyse_transition(
             ext_transition_t ext_transition;
             ext_transition.synchronized = false;
             ext_transition.first = transition;
+            analyse_transition_dependencies(ext_transition);
             ext_transition_vector.push_back(ext_transition);
         }
         else
@@ -334,6 +665,8 @@ void dve_compiler::analyse_transition(
                 ext_transition.synchronized = false;
                 ext_transition.first = transition;
                 ext_transition.property = (*iter_property_transitions);
+                // ltsmin doesn't work with properties, but analyse anyway
+                analyse_transition_dependencies(ext_transition);
                 ext_transition_vector.push_back(ext_transition);
             }
         }
@@ -361,6 +694,7 @@ void dve_compiler::analyse_transition(
                         ext_transition.synchronized = true;
                         ext_transition.first = transition;
                         ext_transition.second = (*iter_transition_vector);
+                        analyse_transition_dependencies(ext_transition);
                         ext_transition_vector.push_back(ext_transition);
                     }
                     else
@@ -376,6 +710,8 @@ void dve_compiler::analyse_transition(
                             ext_transition.first = transition;
                             ext_transition.second = (*iter_transition_vector);
                             ext_transition.property = (*iter_property_transitions);
+                            // ltsmin does't work with properties, but analyse anyway
+                            analyse_transition_dependencies(ext_transition);
                             ext_transition_vector.push_back(ext_transition);
                         }
                     }
@@ -461,6 +797,12 @@ void dve_compiler::analyse()
 void dve_compiler::transition_guard( ext_transition_t *et, std::string in )
 {
     if_begin( false );
+
+    // ltsmin guard extension
+    if ( ltsmin && !many) {
+        if_clause( in_state( et->first->get_process_gid(), et->first->get_state1_lid(), in) );
+    }
+
     if_cexpr_clause( et->first->get_guard(), in );
 
     if( et->synchronized )
@@ -545,29 +887,159 @@ void dve_compiler::transition_effect( ext_transition_t *et, std::string in, std:
     if(have_property) //change of the property process state
         assign( process_state( et->property->get_process_gid(), out ),
                 fmt( et->property->get_state2_lid() ) );
+
+    // show dependency information in the source
+    output_dependency_comment(*et);
 }
 
 void dve_compiler::new_output_state() {
-    line( "divine::Blob blob_out( *(setup->pool), setup->slack + state_size );" );
-    line( "state_struct_t *out = &blob_out.get< state_struct_t >( setup->slack );" );
-    line( "blob_out.clear( 0, setup->slack );" );
-    line( "*out = *in;" );
+    if (ltsmin) {
+            line( "*out = *in;" );
+    } else {
+        line( "divine::Blob blob_out( *(setup->pool), setup->slack + state_size );" );
+        line( "state_struct_t *out = &blob_out.get< state_struct_t >( setup->slack );" );
+        line( "blob_out.clear( 0, setup->slack );" );
+        line( "*out = *in;" );
+    }
 }
 
 void dve_compiler::yield_state() {
-    if ( many ) {
-        line( "if (buf_out->space() < 2) {" );
-        line( "    buf_out->unadd( states_emitted );" );
-        line( "    return;" );
-        line( "}");
-        line( "buf_out->add( (*buf_in)[ 0 ] );" );
-        line( "buf_out->add( blob_out );" );
+    if (ltsmin) {
+        if (many) {
+            line ("transition_info.group = " + fmt( current_label++) + ";");
+        }
+        line( "callback(arg, &transition_info, out);" );
         line( "++states_emitted;" );
     } else {
-        line( "*to = blob_out;" );
-        line( "return " + fmt( current_label ) + ";" );
+        if ( many ) {
+            line( "if (buf_out->space() < 2) {" );
+            line( "    buf_out->unadd( states_emitted );" );
+            line( "    return;" );
+            line( "}");
+            line( "buf_out->add( (*buf_in)[ 0 ] );" );
+            line( "buf_out->add( blob_out );" );
+            line( "++states_emitted;" );
+        } else {
+            line( "*to = blob_out;" );
+            line( "return " + fmt( current_label ) + ";" );
+        }
     }
 }
+
+void dve_compiler::gen_ltsmin_successors()
+{
+    string in = "(*in)", out = "(*out)", space = "";
+    bool some_commited_state = false;
+
+    // find some commited state
+    for(size_int_t i = 0; i < get_process_count(); i++)
+        for(size_int_t j = 0; j < dynamic_cast<dve_process_t*>(get_process(i))->get_state_count(); j++)
+            if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
+                some_commited_state = true;
+
+    if (some_commited_state)
+    {
+        for(size_int_t i = 0; i < this->get_process_count(); i++)
+        {
+            if( transition_map.find(i) != transition_map.end() && !is_property( i ) )
+                for(iter_process_transition_map = transition_map.find(i)->second.begin();
+                    iter_process_transition_map != transition_map.find(i)->second.end();
+                    iter_process_transition_map++)
+                {
+                    if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(
+                           iter_process_transition_map->first))
+                    {
+                        new_label();
+
+                        // committed state
+                        if_begin( true );
+
+                        for(size_int_t p = 0; p < get_process_count(); p++)
+                            for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                                if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                                    if_clause( in_state( p, c, in ) );
+
+                        if_end(); // otherwise this condition is disjoint with the new condition
+
+                        if_begin(true);
+                        if_clause( in_state( i, iter_process_transition_map->first, in ) );
+                        if_end(); block_begin();
+
+                        new_output_state();
+
+                        for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
+                            iter_ext_transition_vector != iter_process_transition_map->second.end();
+                            iter_ext_transition_vector++)
+                        {
+                            // !! jak je to s property synchronizaci v comitted stavech !!
+                            if( !iter_ext_transition_vector->synchronized ||
+                                dynamic_cast<dve_process_t*>(
+                                    get_process(iter_ext_transition_vector->second->get_process_gid()))->
+                                get_commited(iter_ext_transition_vector->second->get_state1_lid()) )
+                            {
+                                transition_guard( &*iter_ext_transition_vector, in );
+                                block_begin();
+                                transition_effect( &*iter_ext_transition_vector, in, out );
+                                block_end();
+                            }
+                        }
+
+                        yield_state();
+                        block_end();
+                        line("return states_emitted;");
+                    }
+                }
+        }
+    }
+
+    for(size_int_t i = 0; i < get_process_count(); i++)
+    {
+        if(transition_map.find(i) != transition_map.end() && !is_property( i ))
+            for(iter_process_transition_map = transition_map.find(i)->second.begin();
+                iter_process_transition_map != transition_map.find(i)->second.end();
+                iter_process_transition_map++)
+            {
+                for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
+                    iter_ext_transition_vector != iter_process_transition_map->second.end();
+                    iter_ext_transition_vector++)
+                {
+                    // make sure this transition is not a committed one
+                    if (!
+                        dynamic_cast<dve_process_t*>(
+                            get_process(iter_ext_transition_vector->first->get_process_gid()))->
+                        get_commited(iter_ext_transition_vector->first->get_state1_lid()) )
+                    {
+
+                        new_label();
+
+                        transition_guard( &*iter_ext_transition_vector, in );
+                        block_begin();
+                        if (some_commited_state)
+                        {
+                            // committed state
+                            if_begin( true );
+
+                            for(size_int_t p = 0; p < get_process_count(); p++)
+                                for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                                    if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                                        if_clause( in_state( p, c, in ) );
+
+                            if_end();
+                            line("    return 0;"); // bail out early
+                        }
+
+
+                        new_output_state();
+                        transition_effect( &*iter_ext_transition_vector, in, out );
+                        yield_state();
+                        block_end();
+                        line("return states_emitted;");
+                    }
+                }
+            }
+    }
+}
+
 
 void dve_compiler::gen_successors()
 {
@@ -641,58 +1113,68 @@ void dve_compiler::gen_successors()
                 iter_process_transition_map != transition_map.find(i)->second.end();
                 iter_process_transition_map++)
             {
-                new_label();
-                if_begin( true );
-                if_clause( in_state( i, iter_process_transition_map->first, in ) );
-
-                if_end(); block_begin();
-
-                for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
-                    iter_ext_transition_vector != iter_process_transition_map->second.end();
-                    iter_ext_transition_vector++)
+                // make sure this transition is not a committed one
+                if (!
+                    dynamic_cast<dve_process_t*>(
+                        get_process(i))->get_commited(iter_process_transition_map->first) )
                 {
-                    new_label();
 
-                    transition_guard( &*iter_ext_transition_vector, in );
-                    block_begin();
-                    new_output_state();
-                    transition_effect( &*iter_ext_transition_vector, in, out );
-                    line( "system_in_deadlock = false;" );
-                    yield_state();
+                    new_label();
+                    if_begin( true );
+                    if_clause( in_state( i, iter_process_transition_map->first, in ) );
+
+                    if_end(); block_begin();
+
+                    for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
+                        iter_ext_transition_vector != iter_process_transition_map->second.end();
+                        iter_ext_transition_vector++)
+                    {
+                        new_label();
+
+                        transition_guard( &*iter_ext_transition_vector, in );
+                        block_begin();
+                        new_output_state();
+                        transition_effect( &*iter_ext_transition_vector, in, out );
+                        if (!ltsmin) line( "system_in_deadlock = false;" );
+                        yield_state();
+                        block_end();
+                    }
                     block_end();
                 }
-                block_end();
             }
     }
     block_end();
 
-    new_label();
-
-    if_begin( true );
-    if_clause( "system_in_deadlock" );
-    if_end(); block_begin();
-
-    for(iter_property_transitions = property_transitions.begin();
-        iter_property_transitions != property_transitions.end();
-        iter_property_transitions++)
+    if (!ltsmin)
     {
         new_label();
-        if_begin( false );
 
-        if_clause( in_state( (*iter_property_transitions)->get_process_gid(),
-                             (*iter_property_transitions)->get_state1_lid(), in ) );
-        if_cexpr_clause( (*iter_property_transitions)->get_guard(), in );
-
+        if_begin( true );
+        if_clause( "system_in_deadlock" );
         if_end(); block_begin();
-        new_output_state();
 
-        assign( process_state( (*iter_property_transitions)->get_process_gid(), in ),
-                fmt( (*iter_property_transitions)->get_state2_lid() ) );
+        for(iter_property_transitions = property_transitions.begin();
+            iter_property_transitions != property_transitions.end();
+            iter_property_transitions++)
+        {
+            new_label();
+            if_begin( false );
 
-        yield_state();
+            if_clause( in_state( (*iter_property_transitions)->get_process_gid(),
+                                 (*iter_property_transitions)->get_state1_lid(), in ) );
+            if_cexpr_clause( (*iter_property_transitions)->get_guard(), in );
+
+            if_end(); block_begin();
+            new_output_state();
+
+            assign( process_state( (*iter_property_transitions)->get_process_gid(), in ),
+                    fmt( (*iter_property_transitions)->get_state2_lid() ) );
+
+            yield_state();
+            block_end();
+        }
         block_end();
     }
-    block_end();
 }
 
 void dve_compiler::gen_is_accepting()
@@ -732,67 +1214,699 @@ void dve_compiler::print_generator()
     line( "}" );
     line();
 
-    line( "extern \"C\" int setup( CustomSetup *setup ) {" );
-    line( "    setup->state_size = state_size;" );
-    line( "    setup->has_property = " + fmt( get_with_property() ) + ";" );
-    line( "}" );
+    if (ltsmin) {
+        line( "extern \"C\" void get_initial_state( char *to )" );
+        block_begin();
+        line( "memcpy(to, (char*)&initial_state, state_size);" );
+        block_end();
+        line();
 
-    line( "extern \"C\" void get_initial( CustomSetup *setup, Blob *out ) {" );
-    line( "    Blob b( *(setup->pool), state_size + setup->slack );" );
-    line( "    memcpy(b.data() + setup->slack, initial_state, state_size);" );
-    line( "    *out = b;" );
-    line( "}" );
+        line( "extern \"C\" bool have_property()" );
+        block_begin();
+        if (have_property) {
+            line("return true;");
+        } else {
+            line("return false;");
+        }
+        block_end();
+        line();
+
+        many = false;
+        current_label = 0;
+        line( "extern \"C\" int get_successor( void* model, int t, state_struct_t *in, void (*callback)(void* arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
+        block_begin();
+        line( "transition_info_t transition_info = { NULL, t };" );
+        line( "(void)model; // ignore model" );
+        line( "int states_emitted = 0;" );
+        line( "state_struct_t tmp;" );
+        line( "state_struct_t *out = &tmp;" );
+        line( "goto switch_state;" );
+        gen_ltsmin_successors();
+        // switch block
+        line( "switch_state: switch( t )" );
+        block_begin();
+        for(int i=0; i < current_label; i++)
+                line( "case " + fmt( i ) + ": goto l" + fmt( i ) + ";" );
+        block_end();
+        line("return 0;");
+        // end switch block
+        block_end();
+        line();
+
+        many = true;
+        current_label = 0;
+
+        line( "extern \"C\" int get_successors( void *model, state_struct_t *in, void (*callback)(void *arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
+        block_begin();
+        line( "(void)model; // ignore model" );
+        line( "transition_info_t transition_info = { NULL, -1 };" );
+        line( "int states_emitted = 0;" );
+        line( "state_struct_t tmp;" );
+        line( "state_struct_t *out = &tmp;" );
+        gen_successors();
+        line( "return states_emitted;" );
+        block_end();
+        line();
+
+        // state descriptors
+        gen_state_info();
+        gen_transition_info();
+    } else {
+        line( "extern \"C\" int setup( CustomSetup *setup ) {" );
+        line( "    setup->state_size = state_size;" );
+        line( "    setup->has_property = " + fmt( get_with_property() ) + ";" );
+        line( "}" );
+
+        line( "extern \"C\" void get_initial( CustomSetup *setup, Blob *out ) {" );
+        line( "    Blob b( *(setup->pool), state_size + setup->slack );" );
+        line( "    memcpy(b.data() + setup->slack, initial_state, state_size);" );
+        line( "    *out = b;" );
+        line( "}" );
+        line();
+
+        many = false;
+        current_label = 1;
+
+        gen_is_accepting();
+
+        line( "extern \"C\" int get_successor( CustomSetup *setup, int next_state, Blob from, Blob *to ) " );
+        block_begin();
+        line( "state_struct_t *in = &from.get< state_struct_t >( setup->slack );" );
+        line( "bool system_in_deadlock = false;" );
+        line( "goto switch_state;" );
+
+        gen_successors();
+
+        new_label();
+        line( "return 0;" );
+
+        line( "switch_state: switch( next_state )" );
+        block_begin();
+        for(int i=1; i < current_label; i++)
+            if (i==1)
+                line( "case " + fmt( i ) + ": system_in_deadlock = true; goto l" + fmt( i ) + ";" );
+            else
+                line( "case " + fmt( i ) + ": goto l" + fmt( i ) + ";" );
+        block_end();
+
+        block_end();
+
+        // many = true;
+        // current_label = 0;
+#if 0
+        line( "extern \"C\" void get_many_successors( int slack, char *_pool, char *," );
+        line( "                                       char *_buf_in, char *_buf_outf, char *_buf_outs ) " );
+        block_begin();
+        line( "divine::Pool *pool = (divine::Pool *) _pool;" );
+        line( "typedef divine::Circular< divine::Blob, 0 > Buffer;" );
+        line( "Buffer *buf_in = (Buffer *) _buf_in;" );
+        line( "Buffer *buf_out = (Buffer *) _buf_out;" );
+        line( "int states_emitted;" );
+        line( "bool system_in_deadlock;" );
+        line( "state_struct_t *in;" );
+
+        line( "next:" );
+        line( "system_in_deadlock = true;" );
+        line( "states_emitted = 0;" );
+        line( "in = (state_struct_t*) ((*buf_in)[ 0 ].data() + slack);" );
+        gen_successors();
+        line( "buf_in->drop( 1 );" );
+        line( "if ( buf_in->empty() ) return;" );
+        line( "goto next;" );
+        block_end();
+#endif
+    }
+}
+
+void dve_compiler::gen_state_info()
+{
+    char buf[1024];
+    // number of variables in the state
+    line( "extern \"C\" int get_state_variable_count() " );
+    block_begin();
+    sprintf(buf, "return %d;", count_state_variables());
+    line(buf);
+    block_end();
     line();
 
-    many = false;
-    current_label = 1;
-
-    gen_is_accepting();
-
-    line( "extern \"C\" int get_successor( CustomSetup *setup, int next_state, Blob from, Blob *to ) " );
+    // name of state variables
+    line( "extern \"C\" const char* get_state_variable_name(int var)" );
     block_begin();
-    line( "state_struct_t *in = &from.get< state_struct_t >( setup->slack );" );
-    line( "bool system_in_deadlock = false;" );
-    line( "goto switch_state;" );
 
-    gen_successors();
-
-    new_label();
-    line( "return 0;" );
-
-    line( "switch_state: switch( next_state )" );
+    line("switch (var)");
     block_begin();
-    for(int i=1; i < current_label; i++)
-        if (i==1)
-            line( "case " + fmt( i ) + ": system_in_deadlock = true; goto l" + fmt( i ) + ";" );
-        else
-            line( "case " + fmt( i ) + ": goto l" + fmt( i ) + ";" );
+
+    // iterate over state variables, output name per variable
+    bool global = true;
+    string name = "UNINITIALIZED";
+    string process_name = "UNINITIALIZED";
+    int k=0;
+    for (size_int_t i=0; i<state_creators_count; ++i, ++k)
+    {
+        sprintf(buf, "case %d:", k);
+        line(buf);
+
+        switch (state_creators[i].type)
+        {
+            case state_creator_t::VARIABLE:
+                name = (global?"":process_name + ".") + 
+                        get_symbol_table()->get_variable(state_creators[i].gid)->get_name();
+
+                if (state_creators[i].array_size)
+                {
+                    for(size_int_t j=0; j < state_creators[i].array_size; ++j)
+                    {
+                        sprintf(buf, "    return \"%s[%zu]\";", name.c_str(), j);
+                        line(buf);
+                        if (j < state_creators[i].array_size - 1) {
+                            sprintf(buf, "case %d:", ++k);
+                            line(buf);
+                        }
+                    }
+                    continue;
+                }
+                break;
+            case state_creator_t::PROCESS_STATE:
+                global = false;
+                name = get_symbol_table()->get_process(state_creators[i].gid)->get_name();
+                process_name = name;
+                break;
+            case state_creator_t::CHANNEL_BUFFER:
+            {
+                name = get_symbol_table()->get_channel(state_creators[i].gid)->get_name();
+                sprintf(buf, "    return \"%s.number_of_items\";", name.c_str());
+                line(buf);
+
+                dve_symbol_t * symbol =
+                  get_symbol_table()->get_channel(state_creators[i].gid);
+                size_int_t item_count = symbol->get_channel_type_list_size();
+                size_int_t chan_size = symbol->get_channel_buffer_size();
+                for(size_int_t i=0; i < chan_size; ++i)
+                {
+                    for (size_int_t j=0; j<item_count; ++j)
+                    {
+                        sprintf(buf, "case %d:", ++k);
+                        line(buf);
+                        sprintf(buf, "    return \"%s[%zu].x%zu\";", name.c_str(), i,j);
+                        line(buf);
+                    }
+                }
+                continue;
+            }
+            default: gerr << "Unexpected error generating variable names" << thr();
+                break;
+        };
+
+        sprintf(buf, "    return \"%s\";", name.c_str());
+        line(buf);
+    }
+
+    line("default:");
+    line("    return NULL;");
     block_end();
 
     block_end();
+    line();
 
-    // many = true;
-    // current_label = 0;
-#if 0
-    line( "extern \"C\" void get_many_successors( int slack, char *_pool, char *," );
-    line( "                                       char *_buf_in, char *_buf_outf, char *_buf_outs ) " );
+    // gather type information
+    std::map<string, int> type_no;
+    std::map<string, std::vector<string> > type_value;
+    int type_count = 0;
+    for (size_int_t i=0; i<state_creators_count; ++i, ++k)
+    {
+        vector<string> values;
+        values.clear();
+        string type_name = "UNINITIALIZED";
+
+        switch (state_creators[i].type)
+        {
+            case state_creator_t::VARIABLE:
+            {
+                dve_symbol_t * var = get_symbol_table()->get_variable(state_creators[i].gid);
+                if (var->is_byte()) { type_name = "byte"; } else { type_name = "int"; };
+                break;
+            }
+            case state_creator_t::PROCESS_STATE:
+            {
+                type_name = get_symbol_table()->get_process(state_creators[i].gid)->get_name();
+                for(size_int_t j = 0;
+                    j < dynamic_cast<dve_process_t*>(this->get_process(state_creators[i].gid))->get_state_count();
+                    j++)
+                {
+                    // add to possible process values
+                    values.push_back(
+                        get_symbol_table()->get_state(
+                        dynamic_cast<dve_process_t*>(this->get_process(state_creators[i].gid))->get_state_gid(j))->get_name()
+                    );
+                }
+                break;
+            }
+            case state_creator_t::CHANNEL_BUFFER:
+            {
+                // the int type is added for the channel by default (number of items is int)
+                // iterate over the channel, if type byte is used, add it also
+                type_name = "byte";
+
+                dve_symbol_t * symbol =
+                    get_symbol_table()->get_channel(state_creators[i].gid);
+                size_int_t item_count = symbol->get_channel_type_list_size();
+                for (size_int_t j=0; j<item_count; ++j)
+                {
+                    if (symbol->get_channel_type_list_item(j)==VAR_BYTE)
+                    {
+                        // check existence of byte type
+                        if (type_no.find(type_name) == type_no.end()) {
+                            type_no[type_name] = type_count++;
+                            type_value[type_name] = values;
+                            // if byte exists, the only other possibility is int, which is added
+                            // by default
+                            break;
+                        }
+                    }
+                }
+                // byte migth be added ab
+                type_name = "int";
+                break;
+            }
+            default: gerr << "Unexpected error while gathering type information" << thr();
+                break;
+        }
+        if (type_no.find(type_name) == type_no.end())
+        {
+            type_no[type_name] = type_count++;
+            type_value[type_name] = values;
+        }
+    }
+
+    // name of state variables
+    line( "extern \"C\" int get_state_variable_type(int var)" );
     block_begin();
-    line( "divine::Pool *pool = (divine::Pool *) _pool;" );
-    line( "typedef divine::Circular< divine::Blob, 0 > Buffer;" );
-    line( "Buffer *buf_in = (Buffer *) _buf_in;" );
-    line( "Buffer *buf_out = (Buffer *) _buf_out;" );
-    line( "int states_emitted;" );
-    line( "bool system_in_deadlock;" );
-    line( "state_struct_t *in;" );
 
-    line( "next:" );
-    line( "system_in_deadlock = true;" );
-    line( "states_emitted = 0;" );
-    line( "in = (state_struct_t*) ((*buf_in)[ 0 ].data() + slack);" );
-    gen_successors();
-    line( "buf_in->drop( 1 );" );
-    line( "if ( buf_in->empty() ) return;" );
-    line( "goto next;" );
+    line("switch (var)");
+    block_begin();
+
+    // iterate over state variables, output name per variable
+    k = 0;
+    for (size_int_t i=0; i<state_creators_count; ++i, ++k)
+    {
+        string type_name = "UNINITIALIZED";
+
+        sprintf(buf, "case %d:", k);
+        line(buf);
+
+        switch (state_creators[i].type)
+        {
+            case state_creator_t::VARIABLE:
+            {
+                dve_symbol_t * var = get_symbol_table()->get_variable(state_creators[i].gid);
+                if (var->is_byte()) { type_name = "byte"; } else { type_name = "int"; };
+
+                if (state_creators[i].array_size)
+                {
+                    for(size_int_t j=0; j < state_creators[i].array_size - 1; ++j)
+                    {
+                        sprintf(buf, "    return %d;", type_no[type_name], j);
+                        line(buf);
+                        sprintf(buf, "case %d:", ++k);
+                        line(buf);
+                    }
+                }
+                break;
+            }
+            case state_creator_t::PROCESS_STATE:
+                type_name = get_symbol_table()->get_process(state_creators[i].gid)->get_name();
+                break;
+            case state_creator_t::CHANNEL_BUFFER:
+            {
+                sprintf(buf, "    return %d;", type_no["int"]);
+                line(buf);
+
+                dve_symbol_t * symbol =
+                  get_symbol_table()->get_channel(state_creators[i].gid);
+                size_int_t item_count = symbol->get_channel_type_list_size();
+                size_int_t chan_size = symbol->get_channel_buffer_size();
+                for(size_int_t i=0; i < chan_size; ++i)
+                {
+                    for (size_int_t j=0; j<item_count; ++j)
+                    {
+                        sprintf(buf, "case %d:", ++k);
+                        line(buf);
+                        if (symbol->get_channel_type_list_item(j) == VAR_BYTE)
+                        {
+                            sprintf(buf, "    return %d;", type_no["byte"]);
+                            line(buf);
+                        } else {
+                            sprintf(buf, "    return %d;", type_no["int"]);
+                            line(buf);
+                        }
+                    }
+                }
+                continue;
+            }
+            default: gerr << "Unexpected error while writing name per variable" << thr();
+                break;
+        };
+
+        sprintf(buf, "    return %d;", type_no[type_name]);
+        line(buf);
+    }
+
+    line("default:");
+    line("    return -1;");
     block_end();
-#endif
+
+    block_end();
+    line();
+
+
+    // number of different types in the state
+    line( "extern \"C\" int get_state_variable_type_count() " );
+    block_begin();
+    sprintf(buf, "return %d;", type_count);
+    line(buf);
+    block_end();
+    line();
+
+    // names of types
+    line( "extern \"C\" const char* get_state_variable_type_name(int type) " );
+    block_begin();
+        line("switch (type)");
+        block_begin();
+        for(std::map<string, int>::iterator ix = type_no.begin(); ix != type_no.end(); ++ix)
+        {
+            sprintf(buf, "case %d:", ix->second);
+            line(buf);
+            sprintf(buf, "    return \"%s\";", ix->first.c_str());
+            line(buf);
+        }
+        line("default:");
+        line("    return NULL;");
+        block_end();
+    block_end();
+    line();
+
+    // number of different values of a type
+    line( "extern \"C\" int get_state_variable_type_value_count(int type)" );
+    block_begin();
+        line("switch (type)");
+        block_begin();
+        for(std::map<string, int>::iterator ix = type_no.begin(); ix != type_no.end(); ++ix)
+        {
+            sprintf(buf, "case %d: // %s", ix->second, ix->first.c_str());
+            line(buf);
+            sprintf(buf, "    return %zu;", type_value[ix->first].size());
+            line(buf);
+        }
+        line("default:");
+        line("    return -1;");
+        block_end();
+    block_end();
+    line();
+
+    // values of types
+    line( "extern \"C\" const char* get_state_variable_type_value(int type, int value) " );
+    block_begin();
+        line("switch (type)");
+        block_begin();
+        for(std::map<string, int>::iterator ix = type_no.begin(); ix != type_no.end(); ++ix)
+        {
+            if (type_value[ix->first].size())
+            {
+                sprintf(buf, "case %d:", ix->second);
+                line(buf);
+                block_begin();
+                    line("switch (value)");
+                    block_begin();
+                    for(int i=0; i < type_value[ix->first].size(); ++i)
+                    {
+                        sprintf(buf, "case %d:", i);
+                        line(buf);
+                        sprintf(buf, "    return \"%s\";", type_value[ix->first][i].c_str());
+                        line(buf);
+                    }
+                    block_end();
+                block_end();
+            }
+        }
+        block_end();
+        line("return NULL;");
+    block_end();
+    line();
+
+
+}
+
+void dve_compiler::gen_transition_info()
+{
+    int sv_count = count_state_variables();
+    int trans_count = 0;
+    bool first = true;
+    char buf[1024];
+
+    // initialize read/write dependency vector
+    std::vector<int> c_base_sv_read(sv_count);
+    std::vector<int> c_base_sv_write(sv_count);
+
+
+    // output transition vectors
+    sprintf(buf, "int transition_dependency[][2][%d] = ", sv_count);
+    line(buf);
+    block_begin();
+    line("// { ... read ...}, { ... write ...}");
+
+
+    /////////////////////////////////
+    /////////////////////////////////
+    bool some_commited_state = false;
+
+    // find some commited state
+    for(size_int_t i = 0; i < get_process_count(); i++)
+        for(size_int_t j = 0; j < dynamic_cast<dve_process_t*>(get_process(i))->get_state_count(); j++)
+            if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
+                some_commited_state = true;
+
+    if (some_commited_state)
+    {
+        // mark commited processes as read
+        for(size_int_t i = 0; i < get_process_count(); i++)
+            for(size_int_t j = 0; j < dynamic_cast<dve_process_t*>(get_process(i))->get_state_count(); j++)
+                if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
+                    mark_dependency(dynamic_cast<dve_process_t*>(get_process(i))->get_gid(),
+                                    state_creator_t::PROCESS_STATE, -1, c_base_sv_read);
+
+        for(size_int_t i = 0; i < this->get_process_count(); i++)
+        {
+            if( transition_map.find(i) != transition_map.end() && !is_property( i ) )
+                for(iter_process_transition_map = transition_map.find(i)->second.begin();
+                    iter_process_transition_map != transition_map.find(i)->second.end();
+                    iter_process_transition_map++)
+                {
+                    if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(
+                           iter_process_transition_map->first))
+                    {
+                        std::vector<int> c_sv_read(c_base_sv_read);
+                        std::vector<int> c_sv_write(c_base_sv_write);
+
+
+                        for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
+                            iter_ext_transition_vector != iter_process_transition_map->second.end();
+                            iter_ext_transition_vector++)
+                        {
+                            // !! jak je to s property synchronizaci v comitted stavech !!
+                            if( !iter_ext_transition_vector->synchronized ||
+                                dynamic_cast<dve_process_t*>(
+                                    get_process(iter_ext_transition_vector->second->get_process_gid()))->
+                                get_commited(iter_ext_transition_vector->second->get_state1_lid()) )
+                            {
+                                // merge sv_read and sv_write vectors 
+                                for(size_int_t i = 0; i < sv_count; i++)
+                                {
+                                    if (iter_ext_transition_vector->sv_read[i])
+                                        c_sv_read[i] = 1;
+                                    if (iter_ext_transition_vector->sv_write[i])
+                                        c_sv_write[i] = 1;
+                                }
+                            }
+                        }
+
+                        trans_count++;
+                        if (first) { first = false; } else { line(","); }
+                        append("{{" );
+                        for(size_int_t i = 0; i < sv_count; i++)
+                        {
+                            sprintf(buf, "%s%d", ((i==0)?"":","), c_sv_read[i]);
+                            append(buf);
+                        }
+                        append("},{" );
+                        for(size_int_t i = 0; i < sv_count; i++)
+                        {
+                            sprintf(buf, "%s%d", ((i==0)?"":","), c_sv_write[i]);
+                            append(buf);
+                        }
+                        append("}}");
+
+                    }
+                }
+        }
+    }
+    /////////////////////////////////
+    /////////////////////////////////
+    for(size_int_t i = 0; i < get_process_count(); i++)
+    {
+        if(transition_map.find(i) != transition_map.end() && !is_property( i ))
+            for(iter_process_transition_map = transition_map.find(i)->second.begin();
+                iter_process_transition_map != transition_map.find(i)->second.end();
+                iter_process_transition_map++)
+            {
+                for(iter_ext_transition_vector = iter_process_transition_map->second.begin();
+                    iter_ext_transition_vector != iter_process_transition_map->second.end();
+                    iter_ext_transition_vector++)
+                {
+                    // make sure this transition is not a committed one
+                    if (!
+                        dynamic_cast<dve_process_t*>(
+                            get_process(iter_ext_transition_vector->first->get_process_gid()))->
+                        get_commited(iter_ext_transition_vector->first->get_state1_lid()) )
+                    {
+                        trans_count++;
+                        if (first) { first = false; } else { line(","); }
+                        append("{{" );
+                        for(size_int_t i = 0; i < sv_count; i++)
+                        {
+                            sprintf(buf, "%s%d", ((i==0)?"":","),
+                                iter_ext_transition_vector->sv_read[i]!=0 ||
+                                c_base_sv_read[i]!=0 ? 1 : 0); // add not in committed state
+                            append(buf);
+                        }
+                        append("},{" );
+                        for(size_int_t i = 0; i < sv_count; i++)
+                        {
+                            sprintf(buf, "%s%d", ((i==0)?"":","), iter_ext_transition_vector->sv_write[i]);
+                            append(buf);
+                        }
+                        append("}}");
+                    }
+                }
+            }
+    }
+    line();
+    block_end();
+    line(";");
+    line();
+
+    // number of transitions
+    line( "extern \"C\" int get_transition_count() " );
+    block_begin();
+    sprintf(buf, "return %d;", trans_count);
+    line(buf);
+    block_end();
+    line();
+
+    // read dependencies
+    line( "extern \"C\" const int* get_transition_read_dependencies(int t) " );
+    block_begin();
+    sprintf(buf, "if (t>=0 && t < %d) return transition_dependency[t][0];", trans_count);
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+
+    // write dependencies
+    line( "extern \"C\" const int* get_transition_write_dependencies(int t) " );
+    block_begin();
+    sprintf(buf, "if (t>=0 && t < %d) return transition_dependency[t][1];", trans_count);
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+
+}
+
+
+void dve_compiler::mark_dependency( size_int_t gid, int type, int idx, std::vector<int> &dep )
+{
+    size_int_t size = 0;
+    bool mark = false;
+    for (size_int_t i=0; i!=state_creators_count; ++i)
+    {
+        mark = state_creators[i].gid == gid && type == state_creators[i].type;
+        switch (state_creators[i].type)
+        {
+            case state_creator_t::VARIABLE:
+            {
+                if (state_creators[i].array_size)
+                {
+                     for(size_int_t j=0; j<state_creators[i].array_size; j++)
+                     {
+                        if (mark && (idx == -1 || idx == j)) dep[size]=1;
+                        size++;
+                     }
+                }
+                else
+                {
+                    if (mark) { dep[size]=1; }
+                    size++;
+                }
+            }
+            break;
+            case state_creator_t::PROCESS_STATE:
+            {
+                if (mark) { dep[size]=1; }
+                size++;
+            }
+            break;
+            case state_creator_t::CHANNEL_BUFFER:
+            {
+                // mark number of items
+                if (mark) dep[size]=1;
+                size++;
+
+                // mark channel
+                dve_symbol_t * symbol =
+                  get_symbol_table()->get_channel(state_creators[i].gid);
+                size_int_t item_count = symbol->get_channel_type_list_size();
+                size_int_t chan_size = symbol->get_channel_buffer_size();
+                for(size_int_t i=0; i < chan_size; ++i) {
+                    for (size_int_t j=0; j<item_count; ++j) {
+                        if (mark) dep[size]=1;
+                        size++;
+                    }
+                }
+            }
+            break;
+            default: gerr << "Unexpected error while marking dependency" << thr();
+                break;
+        };
+    }
+}
+
+int dve_compiler::count_state_variables()
+{
+    size_int_t size = 0;
+    for (size_int_t i=0; i!=state_creators_count; ++i)
+    {
+        switch (state_creators[i].type)
+        {
+            case state_creator_t::VARIABLE:
+                size += (state_creators[i].array_size)?state_creators[i].array_size:1;
+                break;
+            case state_creator_t::PROCESS_STATE:
+                size++;
+                break;
+            case state_creator_t::CHANNEL_BUFFER:
+            {
+                dve_symbol_t * symbol =
+                  get_symbol_table()->get_channel(state_creators[i].gid);
+                size_int_t item_count = symbol->get_channel_type_list_size();
+                size_int_t chan_size = symbol->get_channel_buffer_size();
+                size += (chan_size * item_count) + 1;
+                break;
+            }
+            default: gerr << "Unexpected error while counting length of state" << thr();
+                break;
+        };
+    }
+    return size;
 }
