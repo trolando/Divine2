@@ -1178,10 +1178,17 @@ void dve_compiler::gen_is_accepting()
     if(!have_property)
         return;
 
-    line( "extern \"C\" bool is_accepting( CustomSetup *setup, Blob b, int size )" );
-    block_begin();
+    if (ltsmin) {
+        line( "extern \"C\" int buchi_is_accepting( void* model, char *_state )" );
+        block_begin();
+        line( "(void)model;" );
+        line( "state_struct_t &state = * (state_struct_t*) _state;" );
+    } else {
+        line( "extern \"C\" bool is_accepting( CustomSetup *setup, Blob b, int size )" );
+        block_begin();
+        line( "state_struct_t &state = b.get< state_struct_t >( setup->slack );" );
+    }
 
-    line( "state_struct_t &state = b.get< state_struct_t >( setup->slack );" );
     for(size_int_t i = 0; i < dynamic_cast<dve_process_t*>(get_process((get_property_gid())))->get_state_count(); i++)
     {
         if (dynamic_cast<dve_process_t*>(get_process((get_property_gid())))->get_acceptance(i, 0, 1) )
@@ -1225,6 +1232,8 @@ void dve_compiler::print_generator()
         }
         block_end();
         line();
+
+        gen_is_accepting();
 
         many = false;
         current_label = 0;
