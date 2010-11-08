@@ -1955,6 +1955,33 @@ void dve_compiler::gen_transition_info()
     block_end();
     line();
 
+    /////////////////////////////////////
+    /////////////////////////////////////
+
+    // write get_group_pid (process id)
+    // note: just for testing conflict reduction strategy
+    line( "extern \"C\" void get_group_pid_lid( int t, int* pid0, int* lid0, int* pid1, int* lid1 ) " );
+    block_begin();
+    line("switch(t)");
+    block_begin();
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+        if (current.synchronized) {
+            sprintf(buf, "case %zu: *pid0 = %zu; *lid0=%zu; *pid1 = %zu; *lid1 = %zu; return;", i,
+                current.first->get_process_gid(), current.first->get_state1_lid(),
+                current.second->get_process_gid(), current.second->get_state1_lid());
+            line(buf);
+        } else {
+            sprintf(buf, "case %zu: *pid0 = %zu; *lid0 = %zu; *pid1 = -1; *lid1 = -1; return;", i, current.first->get_process_gid(), current.first->get_state1_lid());
+            line(buf);
+        }
+    }
+    block_end();
+    line("*pid0 = *lid0 = -1;");
+    line("*pid1 = *lid0 = -1;");
+    line("return;");
+    block_end();
+    line();
     /////////////////////////////////
     // SPLIT THE GUARD EXPRESSIONS //
     /////////////////////////////////
