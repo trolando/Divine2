@@ -551,11 +551,11 @@ void dve_compiler::analyse_transition_dependencies( ext_transition_t &ext_transi
         }
     }
 
-    if (have_property) // doesn't work for ltsmin, but mark anyway
+    if (have_property)
     {
         // mark process as read/write?
         mark_dependency(ext_transition.property->get_process_gid(),
-                        state_creator_t::PROCESS_STATE, -1, ext_transition.sv_write);
+                        state_creator_t::PROCESS_STATE, -1, ext_transition.sv_read);
 
         // analyse ext_transition->property->get_guard
         if (ext_transition.property->get_guard())
@@ -629,7 +629,7 @@ void dve_compiler::analyse_transition_dependencies( ext_transition_t &ext_transi
             ext_transition.sv_read);
     }
 
-    if (have_property) // doesn't work for ltsmin, but mark anyway
+    if (have_property)
     {
         // mark process as read/write?
         mark_dependency(ext_transition.property->get_process_gid(),
@@ -665,7 +665,6 @@ void dve_compiler::analyse_transition(
                 ext_transition.synchronized = false;
                 ext_transition.first = transition;
                 ext_transition.property = (*iter_property_transitions);
-                // ltsmin doesn't work with properties, but analyse anyway
                 analyse_transition_dependencies(ext_transition);
                 ext_transition_vector.push_back(ext_transition);
             }
@@ -710,7 +709,6 @@ void dve_compiler::analyse_transition(
                             ext_transition.first = transition;
                             ext_transition.second = (*iter_transition_vector);
                             ext_transition.property = (*iter_property_transitions);
-                            // ltsmin does't work with properties, but analyse anyway
                             analyse_transition_dependencies(ext_transition);
                             ext_transition_vector.push_back(ext_transition);
                         }
