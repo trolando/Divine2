@@ -17,9 +17,6 @@
 
 #ifdef HAVE_MPI
 #include <mpi.h>
-#if defined(OPEN_MPI) && !defined(__APPLE__)
-#include <ompi/version.h>
-#endif
 #endif
 
 #ifdef _WIN32
