@@ -1169,7 +1169,7 @@ void dve_compiler::gen_is_accepting()
         return;
 
     if (ltsmin) {
-        line( "extern \"C\" int buchi_is_accepting( void* model, char *_state )" );
+        line( "extern \"C\" int buchi_is_accepting( void* model, void *_state )" );
         block_begin();
         line( "(void)model;" );
         line( "state_struct_t &state = * (state_struct_t*) _state;" );
@@ -1207,13 +1207,13 @@ void dve_compiler::print_generator()
     line();
 
     if (ltsmin) {
-        line( "extern \"C\" void get_initial_state( char *to )" );
+        line( "extern \"C\" void get_initial_state( void *to )" );
         block_begin();
-        line( "memcpy(to, (char*)&initial_state, state_size);" );
+        line( "memcpy(to, &initial_state, state_size);" );
         block_end();
         line();
 
-        line( "extern \"C\" bool have_property()" );
+        line( "extern \"C\" int have_property()" );
         block_begin();
         if (have_property) {
             line("return true;");
