@@ -1934,7 +1934,7 @@ void dve_compiler::gen_transition_info()
     /////////////////////////////////////
 
     // write get_active
-    line( "extern \"C\" bool get_active( state_struct_t *in, int t ) " );
+    line( "extern \"C\" int get_active( state_struct_t *in, int t ) " );
     block_begin();
     line("switch(t)");
     block_begin();
@@ -2066,7 +2066,7 @@ void dve_compiler::gen_transition_info()
     }
 
     // export the guard value for this state
-    line ("extern \"C\" const bool get_guard(void* model, int g, state_struct_t* src) " );
+    line ("extern \"C\" int get_guard(void* model, int g, state_struct_t* src) " );
     block_begin();
     line ("(void)model;");
     line("switch(g)");
