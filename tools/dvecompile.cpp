@@ -189,23 +189,15 @@ void dve_compiler::gen_header()
         line( "typedef int8_t sbyte_t;" );
         line( "typedef size_t size_int_t;" );
         line();
-    }
-
-    line( compile_defines_str );
-    if (ltsmin) {
+        line( compile_defines_str );
         line();
-    } else {
         line( divine::pool_h_str );
         line();
-
         line( divine::circular_h_str );
         line();
-
         line( divine::blob_h_str );
         line();
-
         line( "using namespace divine;" );
-
         line( divine::generator_custom_api_h_str );
         line();
     }
