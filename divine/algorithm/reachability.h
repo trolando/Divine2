@@ -178,6 +178,15 @@ struct Reachability : Algorithm, DomainWorker< Reachability< G, Statistics > >
         }
     }
 
+    void _init() {
+        m_initialTable = &shared.initialTable;
+        table();
+    }
+
+    void init() {
+        domain().parallel().run( shared, &This::_init );
+    }
+
     Result run() {
         progress() << "  searching... \t" << std::flush;
 

@@ -136,6 +136,15 @@ struct Simple : Algorithm, DomainWorker< Simple< G > >
         }
     }
 
+    void _init() {
+        m_initialTable = &shared.initialTable;
+        table();
+    }
+
+    void init() {
+        domain().parallel().run( shared, &This::_init );
+    }
+
     Result run() {
         progress() << "  exploring... \t\t\t\t" << std::flush;
         domain().parallel().run( shared, &This::_visit );

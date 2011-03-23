@@ -26,6 +26,8 @@ struct NestedDFS : Algorithm
     std::deque< Node > ce_lasso;
     std::deque< Node > toexpand;
 
+    void init() {}
+
     algorithm::Statistics< G > stats;
 
     struct Extension {

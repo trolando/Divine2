@@ -313,6 +313,15 @@ struct Map : Algorithm, DomainWorker< Map< G, _Statistics > >
         ce._traceCycle( *this, hasher, table() );
     }
 
+    void _init() {
+        m_initialTable = &shared.initialTable;
+        table();
+    }
+
+    void init() {
+        domain().parallel().run( shared, &This::_init );
+    }
+
     Result run()
     {
         shared.iteration = 1;
