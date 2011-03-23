@@ -137,6 +137,7 @@ std::string dve_compiler::cexpr( dve_expression_t & expr, std::string state )
 
 void dve_compiler::gen_header()
 {
+	line( "#include <stdlib.h>" );
     line( "#include <stdio.h>" );
     line( "#include <string.h>" );
     line( "#include <stdint.h>" );
@@ -1112,7 +1113,7 @@ void dve_compiler::gen_successors()
                         block_begin();
                         new_output_state();
                         transition_effect( &*iter_ext_transition_vector, in, out );
-                        if (!ltsmin) line( "system_in_deadlock = false;" );
+                        line( "system_in_deadlock = false;" );
                         yield_state();
                         block_end();
                     }
@@ -1122,36 +1123,35 @@ void dve_compiler::gen_successors()
     }
     block_end();
 
-    if (!ltsmin)
+    if (ltsmin_ltl) return;
+
+    new_label();
+
+    if_begin( true );
+    if_clause( "system_in_deadlock" );
+    if_end(); block_begin();
+
+    for(iter_property_transitions = property_transitions.begin();
+        iter_property_transitions != property_transitions.end();
+        iter_property_transitions++)
     {
         new_label();
+        if_begin( false );
 
-        if_begin( true );
-        if_clause( "system_in_deadlock" );
+        if_clause( in_state( (*iter_property_transitions)->get_process_gid(),
+                             (*iter_property_transitions)->get_state1_lid(), in ) );
+        if_cexpr_clause( (*iter_property_transitions)->get_guard(), in );
+
         if_end(); block_begin();
+        new_output_state();
 
-        for(iter_property_transitions = property_transitions.begin();
-            iter_property_transitions != property_transitions.end();
-            iter_property_transitions++)
-        {
-            new_label();
-            if_begin( false );
+        assign( process_state( (*iter_property_transitions)->get_process_gid(), out ),
+                fmt( (*iter_property_transitions)->get_state2_lid() ) );
 
-            if_clause( in_state( (*iter_property_transitions)->get_process_gid(),
-                                 (*iter_property_transitions)->get_state1_lid(), in ) );
-            if_cexpr_clause( (*iter_property_transitions)->get_guard(), in );
-
-            if_end(); block_begin();
-            new_output_state();
-
-            assign( process_state( (*iter_property_transitions)->get_process_gid(), out ),
-                    fmt( (*iter_property_transitions)->get_state2_lid() ) );
-
-            yield_state();
-            block_end();
-        }
+        yield_state();
         block_end();
     }
+    block_end();
 }
 
 void dve_compiler::gen_is_accepting()
@@ -1233,6 +1233,7 @@ void dve_compiler::print_generator()
         block_begin();
         for(int i=0; i < current_label; i++)
                 line( "case " + fmt( i ) + ": goto l" + fmt( i ) + ";" );
+        line( "default: printf (\"Wrong group! Using greybox/long call + -l (DiVinE LTL semantics)? This combo is not implemented.\"); exit (-1);" );
         block_end();
         line("return 0;");
         // end switch block
@@ -1245,6 +1246,7 @@ void dve_compiler::print_generator()
         line( "extern \"C\" int get_successors( void *model, const state_struct_t *in, void (*callback)(void *arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
         block_begin();
         line( "(void)model; // ignore model" );
+        line( "bool system_in_deadlock = true;" );
         line( "transition_info_t transition_info = { NULL, -1 };" );
         line( "int states_emitted = 0;" );
         line( "state_struct_t tmp;" );
@@ -1740,6 +1742,7 @@ void dve_compiler::fill_transition_vector(std::vector<ext_transition_t>& transit
                             // store transition in map
                             ext_transition_t tmp = *iter_ext_transition_vector;
                             tmp.commited = 1;
+                            tmp.buchi = 0;
                             transitions.push_back(tmp);
                             trans_count++;
                         }
@@ -1768,11 +1771,28 @@ void dve_compiler::fill_transition_vector(std::vector<ext_transition_t>& transit
                     {
                         ext_transition_t tmp = *iter_ext_transition_vector;
                         tmp.commited = 0;
+                        tmp.buchi = 0;
                         transitions.push_back(tmp);
                         trans_count++;
                     }
                 }
             }
+    }
+
+    if (have_property && !ltsmin_ltl) {
+        for(iter_property_transitions = property_transitions.begin();
+            iter_property_transitions != property_transitions.end();
+            iter_property_transitions++)
+        {
+            ext_transition_t ext_transition;
+            ext_transition.synchronized = false;
+            ext_transition.first = *iter_property_transitions;
+            ext_transition.property = *iter_property_transitions;
+            ext_transition.buchi = 1;
+            analyse_transition_dependencies(ext_transition);
+            transitions.push_back(ext_transition);
+            trans_count++;
+        }
     }
 }
 
@@ -1877,6 +1897,142 @@ void dve_compiler::gen_transition_info()
                                 state_creator_t::PROCESS_STATE, -1, c_base_sv_read);
             }
 
+
+    /////////////////////////////////
+    // SPLIT THE GUARD EXPRESSIONS //
+    /////////////////////////////////
+
+    // transition -> set of guards
+    std::map<int, std::set<int> > guards;
+    // set of guards
+    std::vector<guard> guard;
+
+    // reserve two guards for committed/not committed
+    if (has_commited) {
+        struct guard g;
+        g.type = GUARD_COMMITED_FIRST;
+        guard.push_back(g);
+    }
+
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+
+        // reference to the set of guards for transition i
+        set<int>& gs = guards[i];
+        int g;
+
+        // push the local state as guard
+        g = add_guard_pc(guard, current.first->get_process_gid(), current.first->get_state1_lid());
+        gs.insert(g);
+
+        // push first guard as a whole
+        if (current.first->get_guard()) {
+            // try splitting the first guard
+            std::vector<struct guard> gtmp;
+            if (split_conjunctive_expression(gtmp, current.first->get_guard())) {
+                // merge dependent guards again
+                merge_dependent_expression(gtmp, sv_count);
+                // add all split guards
+                for(int j=0; j<gtmp.size(); j++) {
+                    g = add_guard_expr(guard, gtmp[j].expr.guard);
+                    gs.insert(g);
+                }
+            } else {
+                g = add_guard_expr(guard, current.first->get_guard());
+                gs.insert(g);
+            }
+        }
+
+        // check synchronized
+        if ( current.synchronized ) {
+            g = add_guard_pc(guard, current.second->get_process_gid(), current.second->get_state1_lid());
+            gs.insert(g);
+            if (current.second->get_guard()) {
+                // try splitting the second guard
+                std::vector<struct guard> gtmp;
+                if (split_conjunctive_expression(gtmp, current.second->get_guard())) {
+                    // merge dependent guards again
+                    merge_dependent_expression(gtmp, sv_count);
+                    // add all split guards
+                    for(int j=0; j<gtmp.size(); j++) {
+                        g = add_guard_expr(guard, gtmp[j].expr.guard);
+                        gs.insert(g);
+                    }
+                } else {
+                    g = add_guard_expr(guard, current.second->get_guard());
+                    gs.insert(g);
+                }
+            }
+        } else {
+            // synchronized on channel?
+            int chan = current.first->get_channel_gid();
+            if (current.first->get_sync_mode() == SYNC_EXCLAIM_BUFFER ||
+                current.first->get_sync_mode() == SYNC_ASK_BUFFER) {
+                g = add_guard_chan(guard, chan, current.first->get_sync_mode());
+                gs.insert(g);
+            }
+        }
+
+        // committed?
+        if (has_commited) {
+            if (!current.commited) {
+                gs.insert(0);
+            }
+        }
+    }
+
+    // extract dependency matrix per guard expression
+    std::vector< std::vector<int> > guard_matrix;
+
+    guard_matrix.resize(guard.size());
+    for(int i=0; i<guard.size(); i++) {
+        std::vector<int> &per_guard_matrix = guard_matrix[i];
+    	 // clear per guard matrix
+		per_guard_matrix.resize(sv_count);
+		per_guard_matrix.clear();
+		switch(guard[i].type) {
+			case GUARD_PC:
+				mark_dependency(guard[i].pc.gid,
+								state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
+				break;
+			case GUARD_EXPR: {
+				// use ext_transition dummy to store read/write vector
+				ext_transition_t et;
+				et.sv_read.resize(sv_count);
+				et.sv_write.resize(sv_count);
+				analyse_expression(*guard[i].expr.guard, et, et.sv_read);
+				per_guard_matrix = et.sv_read;
+				} break;
+			case GUARD_CHAN:
+				mark_dependency(guard[i].chan.chan,
+								state_creator_t::CHANNEL_BUFFER, -1, per_guard_matrix);
+				break;
+			case GUARD_COMMITED_FIRST:
+				for(size_int_t p = 0; p < get_process_count(); p++)
+					for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+						if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+							mark_dependency(p, state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
+				break;
+			default:
+				for(int j=0; j<sv_count; j++) per_guard_matrix[j]=1;
+				break;
+		}
+    }
+
+    // buchi transits on deadlocks, hence also depends on all other guards!
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+        set<int>& gs = guards[i];
+        if (current.buchi)
+        for(size_int_t j = 0; j < transitions.size(); j++) {
+            ext_transition_t& current2 = transitions[j];
+            set<int>& gs2 = guards[j];
+            if (!current2.buchi) {
+            	gs.insert(gs2.begin(), gs2.end());
+            }
+        }
+    }
+
     // output transition vectors
     snprintf(buf, BUFLEN, "int transition_dependency[][2][%d] = ", sv_count);
     line(buf);
@@ -1889,8 +2045,19 @@ void dve_compiler::gen_transition_info()
         append("{{" );
         for(size_int_t j = 0; j < sv_count; j++)
         {
-            snprintf(buf, BUFLEN, "%s%d", ((j==0)?"":","), (current.commited?current.sv_read[j]:max(c_base_sv_read[j], current.sv_read[j])) );
-            append(buf);
+        	int dep = current.commited?current.sv_read[j]:max(c_base_sv_read[j], current.sv_read[j]);
+        	if (!dep && current.buchi) { // use guard info
+        		set<int> &gs = guards[i];
+                for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
+        			std::vector<int> &per_guard_matrix = guard_matrix[*ix];
+        			if (per_guard_matrix[j]) {
+        				dep = 1;
+        				break;
+        			}
+        		}
+        	}
+			snprintf(buf, BUFLEN, "%s%d", ((j==0)?"":","), dep);
+			append(buf);
         }
         append("},{" );
         for(size_int_t j = 0; j < sv_count; j++)
@@ -1985,88 +2152,6 @@ void dve_compiler::gen_transition_info()
     line("return;");
     block_end();
     line();
-    /////////////////////////////////
-    // SPLIT THE GUARD EXPRESSIONS //
-    /////////////////////////////////
-
-    // transition -> set of guards
-    std::map<int, std::set<int> > guards;
-    // set of guards
-    std::vector<guard> guard;
-
-    // reserve two guards for committed/not committed
-    if (has_commited) {
-        struct guard g;
-        g.type = GUARD_COMMITED_FIRST;
-        guard.push_back(g);
-    }
-
-    for(size_int_t i = 0; i < transitions.size(); i++) {
-        ext_transition_t& current = transitions[i];
-
-        // reference to the set of guards for transition i
-        set<int>& gs = guards[i];
-        int g;
-
-        // push the local state as guard
-        g = add_guard_pc(guard, current.first->get_process_gid(), current.first->get_state1_lid());
-        gs.insert(g);
-
-        // push first guard as a whole
-        if (current.first->get_guard()) {
-            // try splitting the first guard
-            std::vector<struct guard> gtmp;
-            if (split_conjunctive_expression(gtmp, current.first->get_guard())) {
-                // merge dependent guards again
-                merge_dependent_expression(gtmp, sv_count);
-                // add all split guards
-                for(int j=0; j<gtmp.size(); j++) {
-                    g = add_guard_expr(guard, gtmp[j].expr.guard);
-                    gs.insert(g);
-                }
-            } else {
-                g = add_guard_expr(guard, current.first->get_guard());
-                gs.insert(g);
-            }
-        }
-
-        // check synchronized
-        if ( current.synchronized ) {
-            g = add_guard_pc(guard, current.second->get_process_gid(), current.second->get_state1_lid());
-            gs.insert(g);
-            if (current.second->get_guard()) {
-                // try splitting the second guard
-                std::vector<struct guard> gtmp;
-                if (split_conjunctive_expression(gtmp, current.second->get_guard())) {
-                    // merge dependent guards again
-                    merge_dependent_expression(gtmp, sv_count);
-                    // add all split guards
-                    for(int j=0; j<gtmp.size(); j++) {
-                        g = add_guard_expr(guard, gtmp[j].expr.guard);
-                        gs.insert(g);
-                    }
-                } else {
-                    g = add_guard_expr(guard, current.second->get_guard());
-                    gs.insert(g);
-                }
-            }
-        } else {
-            // synchronized on channel?
-            int chan = current.first->get_channel_gid();
-            if (current.first->get_sync_mode() == SYNC_EXCLAIM_BUFFER ||
-                current.first->get_sync_mode() == SYNC_ASK_BUFFER) {
-                g = add_guard_chan(guard, chan, current.first->get_sync_mode());
-                gs.insert(g);
-            }
-        }
-
-        // committed?
-        if (has_commited) {
-            if (!current.commited) {
-                gs.insert(0);
-            }
-        }
-    }
 
     // export the guard value for this state
     line ("extern \"C\" int get_guard(void* model, int g, state_struct_t* src) " );
@@ -2203,44 +2288,11 @@ void dve_compiler::gen_transition_info()
     // EXPORT THE GUARD MATRIX     //
     /////////////////////////////////
 
-    // extract dependency matrix per guard expression
-    std::vector<int> per_guard_matrix;
-
     snprintf(buf, BUFLEN, "int guard[][%d] = ", sv_count);
     line(buf);
     block_begin();
         for(int i=0; i<guard.size(); i++) {
-            // clear per guard matrix
-            per_guard_matrix.clear();
-            per_guard_matrix.resize(sv_count);
-            switch(guard[i].type) {
-                case GUARD_PC:
-                    mark_dependency(guard[i].pc.gid,
-                                    state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
-                    break;
-                case GUARD_EXPR: {
-                    // use ext_transition dummy to store read/write vector
-                    ext_transition_t et;
-                    et.sv_read.resize(sv_count);
-                    et.sv_write.resize(sv_count);
-                    analyse_expression(*guard[i].expr.guard, et, et.sv_read);
-                    per_guard_matrix = et.sv_read;
-                    } break;
-                case GUARD_CHAN:
-                    mark_dependency(guard[i].chan.chan,
-                                    state_creator_t::CHANNEL_BUFFER, -1, per_guard_matrix);
-                    break;
-                case GUARD_COMMITED_FIRST:
-                    for(size_int_t p = 0; p < get_process_count(); p++)
-                        for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
-                            if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
-                                mark_dependency(p, state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
-                    break;
-                default:
-                    for(int j=0; j<sv_count; j++) per_guard_matrix[j]=1;
-                    break;
-            }
-
+            std::vector<int> &per_guard_matrix = guard_matrix[i];
             if (i != 0) { line(","); }
             append("{" );
             // guard

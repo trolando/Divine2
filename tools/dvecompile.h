@@ -16,6 +16,7 @@ struct ext_transition_t
 {
     int synchronized;
     int commited;               // used for ltsmin
+    int buchi;		            // used for ltsmin
     dve_transition_t *first;
     dve_transition_t *second;   // only when first transition is synchronized;
     dve_transition_t *property; // transition of property automaton
@@ -55,7 +56,8 @@ struct simple_predicate
 
 struct dve_compiler: public dve_explicit_system_t
 {
-    bool ltsmin;
+    bool ltsmin; // LTSmin successor generator
+    bool ltsmin_ltl; // divine LTL semantics in LTsmin successor generator
     bool many;
     int current_label;
 
@@ -94,8 +96,8 @@ struct dve_compiler: public dve_explicit_system_t
         outline();
     }
 
-    dve_compiler(bool ltsmin, error_vector_t & evect=gerr)
-        : explicit_system_t(evect), dve_explicit_system_t(evect), current_label(0), m_indent( 0 ), ltsmin(ltsmin)
+    dve_compiler(bool ltsmin, bool ltsmin_ltl, error_vector_t & evect=gerr)
+        : explicit_system_t(evect), dve_explicit_system_t(evect), current_label(0), m_indent( 0 ), ltsmin(ltsmin), ltsmin_ltl(ltsmin_ltl)
     {}
     virtual ~dve_compiler() {}
 

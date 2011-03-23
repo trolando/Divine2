@@ -16,6 +16,8 @@ using namespace wibble;
 
 struct Compile {
     commandline::BoolOption *o_ltsmin;
+    commandline::BoolOption *o_ltsmin_ltl;
+    commandline::BoolOption *o_textbook;
     commandline::Engine *cmd_compile;
     commandline::StandardParserWithMandatoryCommand &opts;
 
@@ -55,8 +57,13 @@ struct Compile {
         run( cmd.str() );
     }
 
-    void compileDve( std::string in, bool ltsmin ) {
-        dve_compiler compiler(ltsmin);
+    void compileDve( std::string in, bool ltsmin, bool ltsmin_ltl,
+    											  bool textbook ) {
+    	if (textbook)
+    		die( "Textbook LTL semantics not yet implemented." );
+    	if (ltsmin && ltsmin_ltl)
+            die( "Use -l OR -L." );
+        dve_compiler compiler(ltsmin || ltsmin_ltl, ltsmin_ltl);
         compiler.read( in.c_str() );
         compiler.analyse();
 
@@ -82,7 +89,8 @@ struct Compile {
         if ( access( input.c_str(), R_OK ) )
             die( "FATAL: cannot open input file " + input + " for reading" );
         if ( str::endsWith( input, ".dve" ) ) {
-            compileDve( input, o_ltsmin->boolValue() );
+            compileDve( input, o_ltsmin->boolValue(), o_ltsmin_ltl->boolValue(),
+            										  o_textbook->boolValue() );
 #ifdef HAVE_MURPHI
         } else if ( str::endsWith( input, ".m" ) ) {
             compileMurphi( input );
@@ -101,6 +109,12 @@ struct Compile {
         o_ltsmin = cmd_compile->add< commandline::BoolOption >(
             "ltsmin", 'l', "ltsmin", "",
             "ltsmin interface" );
+        o_ltsmin_ltl = cmd_compile->add< commandline::BoolOption >(
+            "ltsmin", 'L', "LTSmin", "",
+            "ltsmin interface with LTSmin LTL semantics" );
+        o_textbook = cmd_compile->add< commandline::BoolOption >(
+            "textbook", 't', "textbook", "",
+            "ltsmin interface with textbook LTL semantics" );
 
     }
 
