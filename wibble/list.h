@@ -3,6 +3,7 @@
 #include <vector>
 #include <iterator>
 #include <algorithm>
+#include <cstddef>   // ptrdiff_t
 
 #ifndef WIBBLE_LIST_H
 #define WIBBLE_LIST_H
@@ -272,7 +273,7 @@ struct Map {
     }
 
     Map() {}
-    Map( const List &_l, const F &_f ) 
+    Map( const List &_l, const F &_f )
         : l( _l )
     {
         f() = _f;
