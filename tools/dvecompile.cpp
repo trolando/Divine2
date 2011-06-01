@@ -951,16 +951,6 @@ void dve_compiler::gen_ltsmin_successors()
                                 // only generate if not synchonized or synchonized with a committed transition
                                 new_label();
 
-                                // committed state
-                                if_begin( true );
-
-                                for(size_int_t p = 0; p < get_process_count(); p++)
-                                    for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
-                                        if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
-                                            if_clause( in_state( p, c, in ) );
-
-                                if_end(); // otherwise this condition is disjoint with the new condition
-
                                 transition_guard( &*iter_ext_transition_vector, in );
                                 block_begin();
                                 new_output_state();
@@ -1649,6 +1639,75 @@ void dve_compiler::gen_state_info()
 
 }
 
+bool dve_compiler::eq_expr(dve_expression_t* e1, dve_expression_t* e2) {
+    bool result = false;
+    const char* s1 = strdup(cexpr(*e1, "(..)").c_str());
+    const char* s2 = strdup(cexpr(*e2, "(..)").c_str());
+    result = strcmp(s1, s2)==0;
+    free((void*)s1);
+    free((void*)s2);
+    return result;
+}
+
+int dve_compiler::add_guard_pc(std::vector<guard> &guard, divine::size_int_t gid, divine::size_int_t lid) {
+    // look for program counter guard
+    for(int i=0; i < guard.size(); i++) {
+        if (guard[i].type == GUARD_PC) {
+            if (guard[i].pc.gid == gid && guard[i].pc.lid == lid) {
+                return i;
+            }
+        }
+    }
+
+    // not found, add this one as new
+    struct guard g;
+    g.type = GUARD_PC;
+    g.pc.gid = gid;
+    g.pc.lid = lid;
+
+    guard.push_back(g);
+    return guard.size() - 1;
+}
+
+int dve_compiler::add_guard_expr(std::vector<guard> &guard, dve_expression_t* expr) {
+    // look for expression guard
+    for(int i=0; i < guard.size(); i++) {
+        if (guard[i].type == GUARD_EXPR) {
+            if (eq_expr(expr, guard[i].expr.guard)) {
+                return i;
+            }
+        }
+    }
+
+    // not found, add this one as new
+    struct guard g;
+    g.type = GUARD_EXPR;
+    g.expr.guard = expr;
+
+    guard.push_back(g);
+    return guard.size() - 1;
+}
+
+int dve_compiler::add_guard_chan(std::vector<guard> &guard, divine::size_int_t chan, divine::sync_mode_t sync_mode) {
+    // look for expression guard
+    for(int i=0; i < guard.size(); i++) {
+        if (guard[i].type == GUARD_CHAN) {
+            if (guard[i].chan.chan == chan && guard[i].chan.sync_mode == sync_mode) {
+                return i;
+            }
+        }
+    }
+
+    // not found, add this one as new
+    struct guard g;
+    g.type = GUARD_CHAN;
+    g.chan.chan = chan;
+    g.chan.sync_mode = sync_mode;
+
+    guard.push_back(g);
+    return guard.size() - 1;
+}
+
 void dve_compiler::fill_transition_vector(std::vector<ext_transition_t>& transitions)
 {
     // true if committed states are found
@@ -1714,9 +1773,91 @@ void dve_compiler::fill_transition_vector(std::vector<ext_transition_t>& transit
     }
 }
 
+bool dve_compiler::split_conjunctive_expression(std::vector<guard>& guard, dve_expression_t* expr)
+{
+    dve_symbol_table_t * parent_table = expr->get_symbol_table();
+    if (!parent_table) gerr << "Splitting expression: Symbol table not set" << thr();
+    switch (expr->get_operator())
+    {
+        case T_PARENTHESIS:
+            return split_conjunctive_expression(guard, expr->left());
+        case T_BOOL_AND:
+            if (!split_conjunctive_expression(guard, expr->left())) {
+                // add left guard
+                struct guard g;
+                g.type = GUARD_EXPR;
+                g.expr.guard = expr->left();
+                guard.push_back(g);
+            }
+            if (!split_conjunctive_expression(guard, expr->right())) {
+                // add right guard
+                struct guard g;
+                g.type = GUARD_EXPR;
+                g.expr.guard = expr->right();
+                guard.push_back(g);
+            }
+            return true;
+        default:
+            return false;
+    }
+}
+
+void dve_compiler::merge_dependent_expression(std::vector<guard>& guard, int sv_count)
+{
+    std::vector<struct guard> result;
+    // mark state vector dependent indices for each guard
+    std::vector< std::vector<int> > guard_matrix(guard.size());
+    for(int i=0; i < guard.size(); i++) {
+        ext_transition_t et;
+        et.sv_read.resize(sv_count);
+        et.sv_write.resize(sv_count);
+        analyse_expression(*guard[i].expr.guard, et, et.sv_read);
+        guard_matrix[i] = et.sv_read;
+    }
+
+    // merge guards in reverse order
+    // this preserves the original order of the guards, thus (i < 5) && a[i] will
+    // be merged in the correct order
+    for(int i=guard.size()-1; i >=0; i--) {
+        // check all guards before this one
+        int dep = -1;
+        for(int j=i-1; j>=0 && dep == -1; j--) {
+            dep = -1;
+            for(int k=0; k < sv_count; k++) {
+                if (guard_matrix[i][k] == 1 && guard_matrix[j][k] == 1) {
+                    dep = j;
+                    break;
+                }
+            }
+        }
+        // none of the guards are dependent, push out
+        if (dep == -1) {
+            guard_matrix.pop_back();
+            result.push_back(guard[i]);
+        // else merge the to
+        } else {
+            // merge guard
+            for(int k=0; k < sv_count; k++) {
+                guard_matrix[dep][k] = max(guard_matrix[dep][k], guard_matrix[i][k]);
+            }
+            guard_matrix.pop_back();
+            // merge expression
+            struct guard g = guard[dep];
+            g.expr.guard =
+                new dve_expression_t(T_BOOL_AND, *guard[dep].expr.guard, *guard[i].expr.guard,
+                                    dynamic_cast<dve_system_t*>(guard[dep].expr.guard->get_parent_system()) );
+
+            guard[dep] = g;
+            guard.pop_back();
+        }
+    }
+    guard.swap(result);
+}
+
 void dve_compiler::gen_transition_info()
 {
     int sv_count = count_state_variables();
+    bool has_commited = false;
     char buf[1024];
 
     // initialize read/write dependency vector
@@ -1727,9 +1868,11 @@ void dve_compiler::gen_transition_info()
     // mark commited processes as read
     for(size_int_t i = 0; i < get_process_count(); i++)
         for(size_int_t j = 0; j < dynamic_cast<dve_process_t*>(get_process(i))->get_state_count(); j++)
-            if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j))
+            if(dynamic_cast<dve_process_t*>(get_process(i))->get_commited(j)) {
+                has_commited = true;
                 mark_dependency(dynamic_cast<dve_process_t*>(get_process(i))->get_gid(),
                                 state_creator_t::PROCESS_STATE, -1, c_base_sv_read);
+            }
 
     // output transition vectors
     sprintf(buf, "int transition_dependency[][2][%d] = ", sv_count);
@@ -1743,7 +1886,7 @@ void dve_compiler::gen_transition_info()
         append("{{" );
         for(size_int_t j = 0; j < sv_count; j++)
         {
-            sprintf(buf, "%s%d", ((j==0)?"":","), max(c_base_sv_read[j], current.sv_read[j]) );
+            sprintf(buf, "%s%d", ((j==0)?"":","), (current.commited?current.sv_read[j]:max(c_base_sv_read[j], current.sv_read[j])) );
             append(buf);
         }
         append("},{" );
@@ -1787,8 +1930,655 @@ void dve_compiler::gen_transition_info()
     block_end();
     line();
 
+    /////////////////////////////////////
+    /////////////////////////////////////
+
+    // write get_active
+    line( "extern \"C\" bool get_active( state_struct_t *in, int t ) " );
+    block_begin();
+    line("switch(t)");
+    block_begin();
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+        if (current.synchronized) {
+            sprintf(buf, "case %zu: return ((%s) && (%s));", i,
+                in_state(current.first->get_process_gid(), current.first->get_state1_lid(), "(*in)").c_str(),
+                in_state(current.second->get_process_gid(), current.second->get_state1_lid(), "(*in)").c_str());
+            line(buf);
+        } else {
+            sprintf(buf, "case %zu: return (%s);", i, in_state(current.first->get_process_gid(), current.first->get_state1_lid(), "(*in)").c_str());
+            line(buf);
+        }
+    }
+    block_end();
+    line("return false;");
+    block_end();
+    line();
+
+    /////////////////////////////////
+    // SPLIT THE GUARD EXPRESSIONS //
+    /////////////////////////////////
+
+    // transition -> set of guards
+    std::map<int, std::set<int> > guards;
+    // set of guards
+    std::vector<guard> guard;
+
+    // reserve two guards for committed/not committed
+    if (has_commited) {
+        struct guard g;
+        g.type = GUARD_COMMITED_FIRST;
+        guard.push_back(g);
+    }
+
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+
+        // reference to the set of guards for transition i
+        set<int>& gs = guards[i];
+        int g;
+
+        // push the local state as guard
+        g = add_guard_pc(guard, current.first->get_process_gid(), current.first->get_state1_lid());
+        gs.insert(g);
+
+        // push first guard as a whole
+        if (current.first->get_guard()) {
+            // try splitting the first guard
+            std::vector<struct guard> gtmp;
+            if (split_conjunctive_expression(gtmp, current.first->get_guard())) {
+                // merge dependent guards again
+                merge_dependent_expression(gtmp, sv_count);
+                // add all split guards
+                for(int j=0; j<gtmp.size(); j++) {
+                    g = add_guard_expr(guard, gtmp[j].expr.guard);
+                    gs.insert(g);
+                }
+            } else {
+                g = add_guard_expr(guard, current.first->get_guard());
+                gs.insert(g);
+            }
+        }
+
+        // check synchronized
+        if ( current.synchronized ) {
+            g = add_guard_pc(guard, current.second->get_process_gid(), current.second->get_state1_lid());
+            gs.insert(g);
+            if (current.second->get_guard()) {
+                // try splitting the second guard
+                std::vector<struct guard> gtmp;
+                if (split_conjunctive_expression(gtmp, current.second->get_guard())) {
+                    // merge dependent guards again
+                    merge_dependent_expression(gtmp, sv_count);
+                    // add all split guards
+                    for(int j=0; j<gtmp.size(); j++) {
+                        g = add_guard_expr(guard, gtmp[j].expr.guard);
+                        gs.insert(g);
+                    }
+                } else {
+                    g = add_guard_expr(guard, current.second->get_guard());
+                    gs.insert(g);
+                }
+            }
+        } else {
+            // synchronized on channel?
+            int chan = current.first->get_channel_gid();
+            if (current.first->get_sync_mode() == SYNC_EXCLAIM_BUFFER ||
+                current.first->get_sync_mode() == SYNC_ASK_BUFFER) {
+                g = add_guard_chan(guard, chan, current.first->get_sync_mode());
+                gs.insert(g);
+            }
+        }
+
+        // committed?
+        if (has_commited) {
+            if (!current.commited) {
+                gs.insert(0);
+            }
+        }
+    }
+
+    // export the guard value for this state
+    line ("extern \"C\" const bool get_guard(void* model, int g, state_struct_t* src) " );
+    block_begin();
+    line ("(void)model;");
+    line("switch(g)");
+    block_begin();
+        for(int i=0; i<guard.size(); i++) {
+            switch(guard[i].type) {
+                case GUARD_PC:
+                    sprintf(buf, "case %d: return (%s);", i, in_state(guard[i].pc.gid, guard[i].pc.lid, "(*src)").c_str());
+                    line(buf);
+                    break;
+                case GUARD_EXPR:
+                    sprintf(buf, "case %d: return (%s);", i, cexpr(*guard[i].expr.guard,"(*src)").c_str());
+                    line(buf);
+                    break;
+                case GUARD_CHAN:
+                    sprintf(buf, "case %d: return (%s);", i, relate( channel_items(guard[i].chan.chan, "(*src)"), "!=",
+                        (guard[i].chan.sync_mode == SYNC_EXCLAIM_BUFFER? fmt( channel_capacity( guard[i].chan.chan ) ) : "0" ) ).c_str());
+                    line(buf);
+                    break;
+                case GUARD_COMMITED_FIRST:
+                    sprintf(buf, "case %d:", i);
+                    line(buf);
+                    // committed state
+                    block_begin();
+                    if_begin( true );
+
+                    for(size_int_t p = 0; p < get_process_count(); p++)
+                        for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                            if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                                if_clause( in_state( p, c, "(*src)" ) );
+
+                    if_end();
+                    line("    return 0;"); // bail out early
+                    line("return 1;");
+                    block_end();
+                    break;
+            }
+        }
+    block_end();
+    sprintf(buf, "return false;");
+    line(buf);
+    block_end();
+    line();
+
+    // export the guard value for this state
+    line ("extern \"C\" void get_guard_all(void* model, state_struct_t* src, int* guard) " );
+    block_begin();
+    line ("(void)model;");
+    for(int i=0; i<guard.size(); i++) {
+        switch(guard[i].type) {
+            case GUARD_PC:
+                sprintf(buf, "guard[%d] = (%s);", i, in_state(guard[i].pc.gid, guard[i].pc.lid, "(*src)").c_str());
+                line(buf);
+                break;
+            case GUARD_EXPR:
+                sprintf(buf, "guard[%d] = (%s);", i, cexpr(*guard[i].expr.guard,"(*src)").c_str());
+                line(buf);
+                break;
+            case GUARD_CHAN:
+                sprintf(buf, "guard[%d] = (%s);", i, relate( channel_items(guard[i].chan.chan, "(*src)"), "!=",
+                    (guard[i].chan.sync_mode == SYNC_EXCLAIM_BUFFER? fmt( channel_capacity( guard[i].chan.chan ) ) : "0" ) ).c_str());
+                line(buf);
+                break;
+            case GUARD_COMMITED_FIRST:
+                // committed state
+                block_begin();
+                if_begin( true );
+
+                for(size_int_t p = 0; p < get_process_count(); p++)
+                    for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                        if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                            if_clause( in_state( p, c, "(*src)" ) );
+
+                if_end();
+
+                sprintf(buf, "    guard[%d] = 0;", i);
+                line(buf);
+                sprintf(buf, "guard[%d] = 1;", i);
+                line(buf);
+                block_end();
+                break;
+        }
+    }
+    block_end();
+    line();
+
+    // export the number of guards
+    line ("extern \"C\" const int get_guard_count() " );
+    block_begin();
+    sprintf(buf, "return %zu;", guard.size());
+    line(buf);
+    block_end();
+    line();
+
+    sprintf(buf, "int* guards_per_transition[%zu] = ", transitions.size() );
+    line(buf);
+    block_begin();
+        for(int i=0; i < transitions.size(); i++) {
+            set<int>& gs = guards[i];
+
+            sprintf(buf, "((int[]){");
+            append(buf);
+            sprintf(buf, "%zu", gs.size());
+            append(buf);
+            for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
+                sprintf(buf, ", %d", *ix);
+                append(buf);
+            }
+            line("}),");
+        }
+    block_end();
+    line(";");
+    line();
+
+    // export the guards per transition group
+    line ("extern \"C\" const int* get_guards(int t) " );
+    block_begin();
+    sprintf(buf, "if (t>=0 && t < %zu) return guards_per_transition[t];", transitions.size());
+    line(buf);
+    line("return NULL;");
+    block_end();
+    line();
+
+    line ("extern \"C\" const int** get_all_guards() " );
+    block_begin();
+    line("return (const int**)&guards_per_transition;");
+    block_end();
+    line();
+
+    /////////////////////////////////
+    // EXPORT THE GUARD MATRIX     //
+    /////////////////////////////////
+
+    // extract dependency matrix per guard expression
+    std::vector<int> per_guard_matrix;
+
+    sprintf(buf, "int guard[][%d] = ", sv_count);
+    line(buf);
+    block_begin();
+        for(int i=0; i<guard.size(); i++) {
+            // clear per guard matrix
+            per_guard_matrix.clear();
+            per_guard_matrix.resize(sv_count);
+            switch(guard[i].type) {
+                case GUARD_PC:
+                    mark_dependency(guard[i].pc.gid,
+                                    state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
+                    break;
+                case GUARD_EXPR: {
+                    // use ext_transition dummy to store read/write vector
+                    ext_transition_t et;
+                    et.sv_read.resize(sv_count);
+                    et.sv_write.resize(sv_count);
+                    analyse_expression(*guard[i].expr.guard, et, et.sv_read);
+                    per_guard_matrix = et.sv_read;
+                    } break;
+                case GUARD_CHAN:
+                    mark_dependency(guard[i].chan.chan,
+                                    state_creator_t::CHANNEL_BUFFER, -1, per_guard_matrix);
+                    break;
+                case GUARD_COMMITED_FIRST:
+                    for(size_int_t p = 0; p < get_process_count(); p++)
+                        for(size_int_t c = 0; c < dynamic_cast<dve_process_t*>(get_process(p))->get_state_count(); c++)
+                            if(dynamic_cast<dve_process_t*>(get_process(p))->get_commited(c))
+                                mark_dependency(p, state_creator_t::PROCESS_STATE, -1, per_guard_matrix);
+                    break;
+                default:
+                    for(int j=0; j<sv_count; j++) per_guard_matrix[j]=1;
+                    break;
+            }
+
+            if (i != 0) { line(","); }
+            append("{" );
+            // guard
+            for(size_int_t i = 0; i < sv_count; i++)
+            {
+                sprintf(buf, "%s%d", ((i==0)?"":","), per_guard_matrix[i]);
+                append(buf);
+            }
+            append("}" );
+        }
+        line();
+    block_end();
+    line(";");
+    line();
+
+    // export the guard matrix
+    line ("extern \"C\" const int* get_guard_matrix(int g) " );
+    block_begin();
+    sprintf(buf, "if (g>=0 && g < %zu) return guard[g];", guard.size());
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+
+    //////////////////////////////////////////
+    // EXPORT GUARD MAY BE COENABLED MATRIX //
+    //////////////////////////////////////////
+
+    // guard may be co-enabled matrix (#guards x #guards)
+    sprintf(buf, "int guardmaybecoenabled[%zu][%zu] = ", guard.size(), guard.size());
+    line(buf);
+    block_begin();
+    for(size_int_t i=0; i < guard.size(); i++) {
+        append("{");
+        for(size_int_t j=0; j < guard.size(); j++) {
+        if (j !=0) append(", ");
+            if (may_be_coenabled(guard[i], guard[j])) {
+                append("1");
+            } else {
+                append("0");
+            }
+        }
+        if (i == guard.size() - 1)
+            line("}");
+        else
+            line("},");
+    }
+    block_end();
+    line(";");
+    line();
+
+
+    // may be co-enabled function
+    line ("extern \"C\" const int* get_guard_may_be_coenabled_matrix(int g) " );
+    block_begin();
+    sprintf(buf, "if (g>=0 && g < %zu) return guardmaybecoenabled[g];", guard.size());
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+
+    ///////////////////////////////////////////////
+    // EXPORT NECESSARY ENABLING SETS FOR GUARDS //
+    ///////////////////////////////////////////////
+
+    // guard nes matrix (#guards x #transitions)
+    sprintf(buf, "int guard_nes[%zu][%zu] = ", guard.size(), transitions.size());
+    line(buf);
+    block_begin();
+    for(size_int_t i=0; i < guard.size(); i++) {
+        append("{");
+        for(size_int_t j=0; j < transitions.size(); j++) {
+            if (j != 0) append(", ");
+            append(is_guard_nes(guard[i], transitions[j])?"1":"0");
+        }
+        if (i == guard.size() - 1)
+            line("}");
+        else
+            line("},");
+    }
+
+    block_end();
+    line(";");
+    line();
+
+    // guard nes function
+    line ("extern \"C\" const int* get_guard_nes_matrix(int g) " );
+    block_begin();
+    sprintf(buf, "if (g>=0 && g < %zu) return guard_nes[g];", guard.size());
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+
+    ////////////////////////////////////////////////
+    // EXPORT NECESSARY DISABLING SETS FOR GUARDS //
+    ////////////////////////////////////////////////
+
+    // guard nes matrix (#guards x #transitions)
+    sprintf(buf, "int guard_nds[%zu][%zu] = ", guard.size(), transitions.size());
+    line(buf);
+    block_begin();
+    for(size_int_t i=0; i < guard.size(); i++) {
+        append("{");
+        for(size_int_t j=0; j < transitions.size(); j++) {
+            if (j != 0) append(", ");
+            append(is_guard_nds(guard[i], transitions[j])?"1":"0");
+        }
+        if (i == guard.size() - 1)
+            line("}");
+        else
+            line("},");
+    }
+
+    block_end();
+    line(";");
+    line();
+
+    // guard nes function
+    line ("extern \"C\" const int* get_guard_nds_matrix(int g) " );
+    block_begin();
+    sprintf(buf, "if (g>=0 && g < %zu) return guard_nds[g];", guard.size());
+    line(buf);
+    sprintf(buf, "return NULL;");
+    line(buf);
+    block_end();
+    line();
 }
 
+bool dve_compiler::is_guard_nes( guard& g, ext_transition_t& t ) {
+    switch (g.type) {
+        case GUARD_PC:
+            if (g.pc.gid == t.first->get_process_gid())
+                return (g.pc.lid == t.first->get_state2_lid());
+            if (t.synchronized && g.pc.gid == t.second->get_process_gid())
+                return (g.pc.lid == t.second->get_state2_lid());
+            return false;
+        case GUARD_CHAN:
+            if (!t.synchronized && g.chan.chan == t.first->get_channel_gid()) {
+                if (t.first->get_sync_mode() == SYNC_EXCLAIM_BUFFER ||
+                    t.first->get_sync_mode() == SYNC_ASK_BUFFER) {
+                    return g.chan.sync_mode != t.first->get_sync_mode();
+                }
+            }
+            return false;
+        case GUARD_COMMITED_FIRST:
+            return ( dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state1_lid()) &&
+                    !dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state2_lid()));
+    }
+    return true;
+}
+
+bool dve_compiler::is_guard_nds( guard& g, ext_transition_t& t ) {
+    switch (g.type) {
+        case GUARD_PC:
+            if (g.pc.gid == t.first->get_process_gid())
+                return (g.pc.lid == t.first->get_state1_lid() && g.pc.lid != t.first->get_state2_lid());
+            if (t.synchronized && g.pc.gid == t.second->get_process_gid())
+                return (g.pc.lid == t.second->get_state1_lid() && g.pc.lid != t.second->get_state2_lid());
+            return false;
+        case GUARD_CHAN:
+            if (!t.synchronized && g.chan.chan == t.first->get_channel_gid()) {
+                if (t.first->get_sync_mode() == SYNC_EXCLAIM_BUFFER ||
+                    t.first->get_sync_mode() == SYNC_ASK_BUFFER) {
+                    return g.chan.sync_mode == t.first->get_sync_mode();
+                }
+            }
+            return false;
+        /*
+        case GUARD_COMMITED_FIRST:
+            return ( dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state1_lid()) &&
+                   !dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state2_lid()));
+        */
+    }
+    return true;
+}
+
+bool dve_compiler::may_be_coenabled( guard& ga, guard& gb) {
+    // if type different, return default
+    if (ga.type == gb.type || ga.type == GUARD_COMMITED_FIRST) {
+        switch (ga.type) {
+            case GUARD_PC:
+                // if one committed, and the other is not, they may not be co-enabled
+                if (dynamic_cast<dve_process_t*>(get_process(ga.pc.gid))->get_commited(ga.pc.lid) !=
+                    dynamic_cast<dve_process_t*>(get_process(gb.pc.gid))->get_commited(gb.pc.lid))
+                    return false;
+                // may be co enabled if the gid is different (different process)
+                // or if the lid is the same (same process, same local state)
+                return (ga.pc.gid != gb.pc.gid || ga.pc.lid == gb.pc.lid);
+            case GUARD_EXPR: {
+                // difficult static analysis. Give it a try for simple expressions
+                std::vector<simple_predicate> ga_sp;
+                std::vector<simple_predicate> gb_sp;
+                extract_predicates(ga_sp, *ga.expr.guard);
+                extract_predicates(gb_sp, *gb.expr.guard);
+                for(int i=0; i < ga_sp.size(); i++) {
+                    for(int j=0; j < gb_sp.size(); j++) {
+                        if (is_conflict_predicate(ga_sp[i], gb_sp[j])) return false;
+                    }
+                }
+                } break;
+            case GUARD_CHAN:
+                return (ga.chan.chan != gb.chan.chan || ga.chan.sync_mode == gb.chan.sync_mode);
+            case GUARD_COMMITED_FIRST:
+                // this only works with local states
+                if (gb.type == GUARD_PC) {
+                    // all non-committed local states may not be co-enabled with this guard
+                    return (dynamic_cast<dve_process_t*>(get_process(gb.pc.gid))->get_commited(gb.pc.lid));
+                }
+                break;
+        }
+    } else {
+        // if gb is GUARD COMMITED FIRST, reverse the argument order
+        if (gb.type == GUARD_COMMITED_FIRST) return may_be_coenabled(gb, ga);
+    }
+    // default
+    return true;
+}
+
+bool dve_compiler::get_const_expression( dve_expression_t & expr, int & value)
+{
+    dve_symbol_table_t * parent_table = expr.get_symbol_table();
+    if (!parent_table) gerr << "Get const expression: Symbol table not set" << thr();
+    switch (expr.get_operator())
+    {
+        case T_NAT:
+            value = (int)expr.get_value();
+            return true;
+        case T_PARENTHESIS:
+            return get_const_expression(*expr.left(), value);
+        case T_UNARY_MINUS:
+            if ( get_const_expression(*expr.right(), value) ) {
+                value = -value;
+                return true;
+            }
+        default:
+            value = 0;
+    }
+    return false;
+}
+
+bool dve_compiler::get_const_varname( dve_expression_t & expr, string& var)
+{
+    string var_square_bracket;
+    dve_symbol_table_t * parent_table = expr.get_symbol_table();
+    if (!parent_table) gerr << "Get const var: Symbol table not set" << thr();
+    switch (expr.get_operator())
+    {
+        case T_SQUARE_BRACKETS:
+            int val;
+            if (get_const_expression(*expr.left(), val)) {
+                var_square_bracket = "[" + fmt(val) + "]";
+            } else {
+                return false;
+            }
+            // fall through
+        case T_ID:
+            {
+                string proc_part("");
+                string var_part(parent_table->get_variable(expr.get_ident_gid())->get_name());
+                if (parent_table->get_variable(expr.get_ident_gid())->get_process_gid() != NO_ID) {
+                    proc_part = parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
+                                get_process_gid())->get_name();
+                    proc_part += ".";
+                }
+                var = proc_part + var_part + var_square_bracket;
+            }
+            return true;
+        default:
+            var = "";
+    }
+    return false;
+}
+void dve_compiler::extract_predicates( std::vector<simple_predicate>& p, dve_expression_t& expr)
+{
+    dve_symbol_table_t * parent_table = expr.get_symbol_table();
+    if (!parent_table) gerr << "Extract predicates: Symbol table not set" << thr();
+    switch (expr.get_operator())
+    {
+        case T_PARENTHESIS:
+            return extract_predicates(p, *expr.left());
+        case T_LT: case T_LEQ: case T_EQ: case T_NEQ: case T_GT: case T_GEQ: {
+            simple_predicate sp;
+            if (get_const_varname(*expr.left(), sp.variable_name)) {
+                if (get_const_expression(*expr.right(), sp.variable_value) ) {
+                    switch(expr.get_operator()) {
+                        case T_LT:  sp.relation = PRED_LT;  break;
+                        case T_LEQ: sp.relation = PRED_LEQ; break;
+                        case T_EQ:  sp.relation = PRED_EQ;  break;
+                        case T_NEQ: sp.relation = PRED_NEQ; break;
+                        case T_GT:  sp.relation = PRED_GT;  break;
+                        case T_GEQ: sp.relation = PRED_GEQ; break;
+                    }
+                    p.push_back(sp);
+                }
+            }
+            } break;
+        case T_BOOL_AND:
+        {
+            extract_predicates( p, *expr.left());
+            extract_predicates( p, *expr.right());
+        }
+    }
+    // no disjoint expression found
+    return;
+}
+
+bool dve_compiler::is_conflict_predicate(simple_predicate& p1, simple_predicate p2)
+{
+    // assume no conflict
+    bool no_conflict = true;
+    // conflict only possible on same variable
+    if (p1.variable_name == p2.variable_name) {
+        switch(p1.relation) {
+            case PRED_LT:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value < p1.variable_value - 1) ||
+                (p2.variable_value == p1.variable_value - 1 && p2.relation != PRED_GT) ||
+                (p2.relation == PRED_LT || p2.relation == PRED_LEQ || p2.relation == PRED_NEQ);
+                break;
+
+            case PRED_LEQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value < p1.variable_value) ||
+                (p2.variable_value == p1.variable_value && p2.relation != PRED_GT) ||
+                (p2.relation == PRED_LT || p2.relation == PRED_LEQ || p2.relation == PRED_NEQ);
+                break;
+
+            case PRED_EQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value == p1.variable_value && (p2.relation == PRED_EQ || p2.relation == PRED_LEQ || p2.relation == PRED_GEQ)) ||
+                (p2.variable_value != p1.variable_value && p2.relation == PRED_NEQ) ||
+                (p2.variable_value < p1.variable_value && p2.relation == PRED_GT || p2.relation == PRED_GEQ) ||
+                (p2.variable_value > p1.variable_value && (p2.relation == PRED_LT || p2.relation == PRED_LEQ));
+                break;
+
+            case PRED_NEQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value != p1.variable_value) ||
+                (p2.variable_value == p1.variable_value && p2.relation != PRED_EQ);
+                break;
+
+            case PRED_GT:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value > p1.variable_value + 1) ||
+                (p2.variable_value == p1.variable_value + 1 && p2.relation != PRED_LT) ||
+                (p2.relation == PRED_GT || p2.relation == PRED_GEQ || p2.relation == PRED_NEQ);
+                break;
+
+            case PRED_GEQ:
+                // no conflict if one of these cases
+                no_conflict =
+                (p2.variable_value > p1.variable_value) ||
+                (p2.variable_value == p1.variable_value && p2.relation != PRED_LT) ||
+                (p2.relation == PRED_GT || p2.relation == PRED_GEQ || p2.relation == PRED_NEQ);
+                break;
+        }
+    }
+    return !no_conflict;
+}
 
 void dve_compiler::mark_dependency( size_int_t gid, int type, int idx, std::vector<int> &dep )
 {

@@ -23,6 +23,36 @@ struct ext_transition_t
     std::vector<int> sv_write;
 };
 
+typedef enum {GUARD_EXPR, GUARD_PC, GUARD_CHAN, GUARD_COMMITED_FIRST} guard_type;
+struct guard
+{
+    guard_type type;
+    union
+    {
+        struct {
+            dve_expression_t * guard;
+        } expr; // expression
+
+        struct {
+            divine::size_int_t gid;
+            divine::size_int_t lid;
+        } pc; // programm counter
+
+        struct {
+            divine::size_int_t chan;
+            divine::sync_mode_t sync_mode;
+        } chan;
+    };
+};
+
+typedef enum {PRED_LT, PRED_LEQ, PRED_EQ, PRED_NEQ, PRED_GT, PRED_GEQ} predicate_relation_t;
+struct simple_predicate
+{
+    std::string             variable_name;
+    predicate_relation_t    relation;
+    int                     variable_value;
+};
+
 struct dve_compiler: public dve_explicit_system_t
 {
     bool ltsmin;
@@ -192,8 +222,21 @@ struct dve_compiler: public dve_explicit_system_t
     void gen_state_struct();
     void gen_initial_state();
     void gen_state_info();
+    bool eq_expr(dve_expression_t*, dve_expression_t*);
+    int  add_guard_expr(std::vector<guard> &guard, dve_expression_t* expr);
+    int  add_guard_pc  (std::vector<guard> &guard, divine::size_int_t gid, divine::size_int_t lid);
+    int  add_guard_chan(std::vector<guard> &guard, divine::size_int_t chan, divine::sync_mode_t sync_mode);
     void fill_transition_vector(std::vector<ext_transition_t>&);
+    bool split_conjunctive_expression(std::vector<guard>& guard, dve_expression_t* expr);
+    void merge_dependent_expression(std::vector<guard>& guard, int sv_count);
     void gen_transition_info();
+    bool get_const_varname( dve_expression_t & expr, string & var);
+    bool get_const_expression( dve_expression_t & expr, int & value);
+    bool is_guard_nes( guard& g, ext_transition_t& t );
+    bool is_guard_nds( guard& g, ext_transition_t& t );
+    bool may_be_coenabled( guard& ga, guard& gb);
+    void extract_predicates( std::vector<simple_predicate>& p, dve_expression_t& e);
+    bool is_conflict_predicate(simple_predicate& p1, simple_predicate p2);
 
     void print_generator();
 };
