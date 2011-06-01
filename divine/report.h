@@ -97,6 +97,17 @@ struct Report
     }
 #endif
 
+    void reset() {
+#ifdef POSIX
+        gettimeofday(&tv, NULL);
+#endif
+
+#ifdef _WIN32
+    hProcess = GetCurrentProcess();
+        GetLocalTime(&stStart);
+#endif
+    }
+
     void signal( int s )
     {
         m_finished = false;

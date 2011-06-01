@@ -93,9 +93,9 @@ struct Main {
             return;
         }
 
+        Result res;
         Report rep( config );
         report = &rep;
-        Result res;
 
 #ifdef PERFORMANCE
         if ( statistics )
@@ -444,6 +444,8 @@ struct Main {
     Result run() {
         try {
             Algorithm alg( &config );
+            alg.init(); 
+            report->reset();
             setupParallel< Stats >( Preferred(), report, alg );
             return alg.run();
         } catch (std::exception &e) {

@@ -94,10 +94,9 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
             break;
 
         case T_DOT:
-            ostr<<state_name<<".";
-            ostr<<parent_table->get_process(parent_table->get_state(expr.get_ident_gid())->
-                                            get_process_gid())->get_name(); ostr<<".state"<<(ltsmin?".var":"")<<" == ";
-            ostr<<parent_table->get_state(expr.get_ident_gid())->get_lid();
+            ostr << in_state(
+                parent_table->get_state(expr.get_ident_gid())->get_process_gid(), 
+                parent_table->get_state(expr.get_ident_gid())->get_lid(), state_name );
             break;
 
         case T_IMPLY:

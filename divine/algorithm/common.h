@@ -105,6 +105,8 @@ struct Algorithm
         }
     }
 
+    //void init();
+
     Algorithm( Config *c = 0, int slack = 0 )
         : m_config( c ), m_slack( slack ), m_table( 0 )
     {

@@ -509,6 +509,15 @@ struct Owcty : Algorithm, DomainWorker< Owcty< G, Statistics > >
         shared.stats.updateResult( result() );
         shared.stats = algorithm::Statistics< G >();
     }
+    
+    void _init() {
+        m_initialTable = &shared.initialTable;
+        table();
+    }
+
+    void init() {
+        domain().parallel().run( shared, &This::_init );
+    }
 
     Result run()
     {
