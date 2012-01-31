@@ -1141,7 +1141,7 @@ void dve_compiler::gen_successors()
             if_end(); block_begin();
             new_output_state();
 
-            assign( process_state( (*iter_property_transitions)->get_process_gid(), in ),
+            assign( process_state( (*iter_property_transitions)->get_process_gid(), out ),
                     fmt( (*iter_property_transitions)->get_state2_lid() ) );
 
             yield_state();
@@ -1216,7 +1216,7 @@ void dve_compiler::print_generator()
 
         many = false;
         current_label = 0;
-        line( "extern \"C\" int get_successor( void* model, int t, state_struct_t *in, void (*callback)(void* arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
+        line( "extern \"C\" int get_successor( void* model, int t, const state_struct_t *in, void (*callback)(void* arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
         block_begin();
         line( "transition_info_t transition_info = { NULL, t };" );
         line( "(void)model; // ignore model" );
@@ -1239,7 +1239,7 @@ void dve_compiler::print_generator()
         many = true;
         current_label = 0;
 
-        line( "extern \"C\" int get_successors( void *model, state_struct_t *in, void (*callback)(void *arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
+        line( "extern \"C\" int get_successors( void *model, const state_struct_t *in, void (*callback)(void *arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
         block_begin();
         line( "(void)model; // ignore model" );
         line( "transition_info_t transition_info = { NULL, -1 };" );
@@ -1274,7 +1274,7 @@ void dve_compiler::print_generator()
 
         line( "extern \"C\" int get_successor( CustomSetup *setup, int next_state, Blob from, Blob *to ) " );
         block_begin();
-        line( "state_struct_t *in = &from.get< state_struct_t >( setup->slack );" );
+        line( "const state_struct_t *in = &from.get< state_struct_t >( setup->slack );" );
         line( "bool system_in_deadlock = false;" );
         line( "goto switch_state;" );
 
