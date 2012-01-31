@@ -48,9 +48,9 @@ void dve_compiler::write_C(dve_expression_t & expr, std::ostream & ostr, std::st
             if (ltsmin) ostr << ".var";
             break;
         case T_FOREIGN_ID:
-            ostr << parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
+            ostr <<state_name<<"."<< parent_table->get_process(parent_table->get_variable(expr.get_ident_gid())->
                                               get_process_gid())->get_name(); //name of process
-            ostr<<"->";
+            ostr<<".";
             ostr << parent_table->get_variable(expr.get_ident_gid())->get_name();
             if (ltsmin) ostr << ".var";
             break;
