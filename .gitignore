@@ -1,0 +1,9 @@
+Debug/
+_build/
+CMakeFiles/
+Makefile
+*.cmake
+install_manifest.txt
+wibble/libwibble.pc
+divine/sha1
+divine/sha1.cpp
