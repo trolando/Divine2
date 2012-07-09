@@ -1513,7 +1513,7 @@ void dve_compiler::gen_state_info()
                 {
                     for(size_int_t j=0; j < state_creators[i].array_size - 1; ++j)
                     {
-                        snprintf(buf, BUFLEN, "    return %d;", type_no[type_name], j);
+                        snprintf(buf, BUFLEN, "    return %d;", type_no[type_name]);
                         line(buf);
                         snprintf(buf, BUFLEN, "case %d:", ++k);
                         line(buf);
@@ -2444,6 +2444,7 @@ bool dve_compiler::is_guard_nes( guard& g, ext_transition_t& t ) {
         case GUARD_COMMITED_FIRST:
             return ( dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state1_lid()) &&
                     !dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state2_lid()));
+        default: return true; // dont know.
     }
     return true;
 }
@@ -2469,6 +2470,7 @@ bool dve_compiler::is_guard_nds( guard& g, ext_transition_t& t ) {
             return ( dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state1_lid()) &&
                    !dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state2_lid()));
         */
+        default: return true;// dont know.
     }
     return true;
 }
