@@ -1,5 +1,6 @@
 // -*- C++ -*- (c) 2010 Petr Rockai <me@mornfall.net>
 
+#include <unistd.h>
 #include <wibble/commandline/parser.h>
 #include <wibble/string.h>
 #include "dvecompile.h"

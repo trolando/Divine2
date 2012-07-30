@@ -1,6 +1,7 @@
 /* -*- C++ -*- (c) 2007 Petr Rockai <me@mornfall.net>
                (c) 2007 Enrico Zini <enrico@enricozini.org> */
 #include <wibble/sys/fs.h>
+#include <unistd.h>
 #include <cstdlib>
 #include <set>
 #include <cstdlib>

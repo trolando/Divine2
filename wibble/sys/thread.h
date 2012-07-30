@@ -21,6 +21,7 @@
 #ifndef WIBBLE_SYS_THREAD_H
 #define WIBBLE_SYS_THREAD_H
 
+#include <unistd.h>
 #include <wibble/sys/macros.h>
 #include <wibble/exception.h>
 #ifdef POSIX

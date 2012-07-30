@@ -2,6 +2,7 @@
    (c) 2007 Enrico Zini <enrico@enricozini.org> */
 #include <wibble/sys/childprocess.h>
 
+#include <unistd.h>
 #ifdef POSIX
 #include <wibble/sys/process.h>
 #include <wibble/sys/exec.h>

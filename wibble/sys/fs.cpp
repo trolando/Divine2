@@ -2,6 +2,7 @@
 #include <wibble/sys/process.h>
 #include <wibble/string.h>
 #include <wibble/exception.h>
+#include <unistd.h>
 #include <fstream>
 #include <sys/stat.h>
 #include <errno.h>

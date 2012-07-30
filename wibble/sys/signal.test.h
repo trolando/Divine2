@@ -1,5 +1,6 @@
 /* -*- C++ -*- (c) 2009 Enrico Zini <enrico@enricozini.org> */
 #include <wibble/sys/signal.h>
+#include <unistd.h>
 #include <set>
 #include <cstdlib>
 
