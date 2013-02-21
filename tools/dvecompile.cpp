@@ -178,6 +178,7 @@ void dve_compiler::gen_header()
         line( "{" );
         line( "    int* label;" );
         line( "    int  group;" );
+        line( "    int  por_proviso;" );
         line( "} transition_info_t;" );
         line();
     } else {
@@ -1221,7 +1222,7 @@ void dve_compiler::print_generator()
         current_label = 0;
         line( "extern \"C\" int get_successor( void* model, int t, const state_struct_t *in, void (*callback)(void* arg, transition_info_t *transition_info, state_struct_t *out), void *arg ) " );
         block_begin();
-        line( "transition_info_t transition_info = { NULL, t };" );
+        line( "transition_info_t transition_info = { NULL, t, 0 };" );
         line( "(void)model; // ignore model" );
         line( "int states_emitted = 0;" );
         line( "state_struct_t tmp;" );
@@ -1247,7 +1248,7 @@ void dve_compiler::print_generator()
         block_begin();
         line( "(void)model; // ignore model" );
         line( "bool system_in_deadlock = true;" );
-        line( "transition_info_t transition_info = { NULL, -1 };" );
+        line( "transition_info_t transition_info = { NULL, -1, 0 };" );
         line( "int states_emitted = 0;" );
         line( "state_struct_t tmp;" );
         line( "state_struct_t *out = &tmp;" );
