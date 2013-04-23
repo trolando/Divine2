@@ -2392,6 +2392,40 @@ void dve_compiler::gen_transition_info()
     line();
 
     ////////////////////////////////////////////////
+    // EXPORT DO NOT ACCORD MATRIX                //
+    ////////////////////////////////////////////////
+
+    // guard nes matrix (#guards x #transitions)
+    snprintf(buf, BUFLEN, "int nda[%zu][%zu] = ", transitions.size(), transitions.size());
+    line(buf);
+    block_begin();
+    for(size_int_t i=0; i < transitions.size(); i++) {
+        append("{");
+        for(size_int_t j=0; j < transitions.size(); j++) {
+            if (j != 0) append(", ");
+            append(is_nda(transitions[i], transitions[j])?"1":"0");
+        }
+        if (i == guard.size() - 1)
+            line("}");
+        else
+            line("},");
+    }
+
+    block_end();
+    line(";");
+    line();
+
+    // guard nes function
+    line ("extern \"C\" const int* get_nda_matrix(int t) " );
+    block_begin();
+    snprintf(buf, BUFLEN, "if (t >= 0 && t < %zu) return nda[t];", transitions.size());
+    line(buf);
+    snprintf(buf, BUFLEN, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+
+    ////////////////////////////////////////////////
     // EXPORT NECESSARY DISABLING SETS FOR GUARDS //
     ////////////////////////////////////////////////
 
@@ -2472,6 +2506,13 @@ bool dve_compiler::is_guard_nds( guard& g, ext_transition_t& t ) {
                    !dynamic_cast<dve_process_t*>(get_process(t.first->get_process_gid()))->get_commited(t.first->get_state2_lid()));
         */
         default: return true;// dont know.
+    }
+    return true;
+}
+
+bool dve_compiler::is_nda( ext_transition_t& t1, ext_transition_t& t2 ) {
+    if (t1.) {
+
     }
     return true;
 }

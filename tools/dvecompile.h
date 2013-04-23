@@ -236,6 +236,7 @@ struct dve_compiler: public dve_explicit_system_t
     bool get_const_expression( dve_expression_t & expr, int & value);
     bool is_guard_nes( guard& g, ext_transition_t& t );
     bool is_guard_nds( guard& g, ext_transition_t& t );
+    bool dve_compiler::is_nda( ext_transition_t& t1, ext_transition_t& t2);
     bool may_be_coenabled( guard& ga, guard& gb);
     void extract_predicates( std::vector<simple_predicate>& p, dve_expression_t& e);
     bool is_conflict_predicate(simple_predicate& p1, simple_predicate p2);
