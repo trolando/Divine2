@@ -2034,6 +2034,98 @@ void dve_compiler::gen_transition_info()
         }
     }
 
+    // compute transition coenabledness
+    std::vector< std::vector<bool> > transition_coenabled;
+
+    for(size_int_t i=0; i < transitions.size(); i++) {
+        std::vector<bool> &per_transition_coenabled = transition_coenabled[i];
+        set<int> &gs = guards[i];
+        // for each guard of transition i
+        for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
+            // check coenabledness with each guard of transition j
+            for(size_int_t j=0; j < transitions.size(); j++) {
+                set<int> &gs2 = guards[j];
+                for(set<int>::iterator iy = gs2.begin(); iy != gs2.end(); iy++) {
+                    per_transition_coenabled[j] |= !may_be_coenabled(guard[*ix], guard[*iy]);
+                }
+            }
+        }
+    }
+
+    // compute nds guard -> set of transitions
+    std::vector< std::vector<bool> > guard_nds;
+    for(size_int_t i=0; i < guard.size(); i++) {
+        std::vector<bool> &per_guard_nds = guard_nds[i];
+        for(size_int_t j=0; j < transitions.size(); j++) {
+            per_guard_nds[j] |= is_guard_nds(guard[i], transitions[j]);
+        }
+    }
+
+    // compute nds of transitions x transition
+    std::vector< std::vector<bool> > transition_nds;
+    for(size_int_t i=0; i < transitions.size(); i++) {
+        std::vector<bool> &per_transition_nds = transition_nds[i];
+        set<int> &gs = guards[i];
+        // for each guard of transition i, mark the disabling transitions as disabling..
+        for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
+            for(size_int_t j=0; j < transitions.size(); j++) {
+                per_transition_nds[j] = per_guard_nds[*ix][j];
+            }
+        }
+    }
+
+    // compute variable set of transition
+    std::vector< std::vector<bool> > transition_variable_set;
+    // compute read set of transition
+    std::vector< std::vector<bool> > transition_read_set;
+    // compute write set of transition
+    std::vector< std::vector<bool> > transition_write_set;
+    // compute sets
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        ext_transition_t& current = transitions[i];
+        std::vector<bool> &per_transition_variable_set = transition_variable_set[i];
+        std::vector<bool> &per_transition_read_set = transition_read_set[i];
+        std::vector<bool> &per_transition_write_set = transition_write_set[i];
+        for(size_int_t j = 0; j < sv_count; j++)
+        {
+            int dep = current.commited?current.sv_read[j]:max(c_base_sv_read[j], current.sv_read[j]);
+            if (!dep && current.buchi) { // use guard info
+                set<int> &gs = guards[i];
+                for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
+                    std::vector<int> &per_guard_matrix = guard_matrix[*ix];
+                    if (per_guard_matrix[j]) {
+                        dep = 1;
+                        break;
+                    }
+                }
+            }
+            per_transition_variable_set[j] |=  dep;
+            per_transition_read_set[j] |=  dep;
+            per_transition_write_set[j] |=  current.sv_write[j];
+        }
+    }
+
+    // compute certainly-commutes condition (transition x transition)
+    std::vector< std::vector<bool> > certainly_commutes;
+    for(size_int_t i = 0; i < transitions.size(); i++) {
+        std::vector<bool> &per_transition_certainly_commutes = certainly_commutes[i];
+        for(size_int_t j = 0; j < transitions.size(); j++) {
+            for(size_int_t k = 0; k < sv_count; k++)
+            {
+                per_transition_certainly_commutes[j] =
+                    transition_read_set[i][k] &&
+                    transition_read_set[j][k] &&
+                    (
+                        transition_write_set[i][k] ||
+                        transition_write_set[j][k]
+                    );
+            }
+        }
+    }
+
+
+
+
     // output transition vectors
     snprintf(buf, BUFLEN, "int transition_dependency[][2][%d] = ", sv_count);
     line(buf);
@@ -2395,15 +2487,15 @@ void dve_compiler::gen_transition_info()
     // EXPORT DO NOT ACCORD MATRIX                //
     ////////////////////////////////////////////////
 
-    // guard nes matrix (#guards x #transitions)
-    snprintf(buf, BUFLEN, "int nda[%zu][%zu] = ", transitions.size(), transitions.size());
+    // guard do not accord matrix (#transitions x #transitions)
+    snprintf(buf, BUFLEN, "int dna[%zu][%zu] = ", transitions.size(), transitions.size());
     line(buf);
     block_begin();
     for(size_int_t i=0; i < transitions.size(); i++) {
         append("{");
         for(size_int_t j=0; j < transitions.size(); j++) {
             if (j != 0) append(", ");
-            append(is_nda(transitions[i], transitions[j])?"1":"0");
+            append(is_dna(transitions[i], transitions[j])?"1":"0");
         }
         if (i == guard.size() - 1)
             line("}");
@@ -2415,10 +2507,10 @@ void dve_compiler::gen_transition_info()
     line(";");
     line();
 
-    // guard nes function
-    line ("extern \"C\" const int* get_nda_matrix(int t) " );
+    // guard dna function
+    line ("extern \"C\" const int* get_dna_matrix(int t) " );
     block_begin();
-    snprintf(buf, BUFLEN, "if (t >= 0 && t < %zu) return nda[t];", transitions.size());
+    snprintf(buf, BUFLEN, "if (t >= 0 && t < %zu) return dna[t];", transitions.size());
     line(buf);
     snprintf(buf, BUFLEN, "return NULL;");
     line(buf);
@@ -2510,7 +2602,17 @@ bool dve_compiler::is_guard_nds( guard& g, ext_transition_t& t ) {
     return true;
 }
 
-bool dve_compiler::is_nda( ext_transition_t& t1, ext_transition_t& t2 ) {
+bool dve_compiler::is_dna( ext_transition_t& t1, ext_transition_t& t2 ) {
+    if (has_commited) { exit(1); } // unsupported
+    // overappoximation:
+    // two transitions do not accord if
+
+    // 1) there exists a variable in the test set of t1 that is in the write down set of t2 (the set of transitions that disables
+
+    // 2) t1 is in the write down set of t2
+
+    // 3) the common variables of t1 and t2 are a subset of the all the variables in the write sets of t1 and t2
+
     if (t1.) {
 
     }
