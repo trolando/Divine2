@@ -2,6 +2,9 @@
 #include <tools/dvecompile.h>
 #include <divine/generator/common.h>
 
+#include <string>
+#include <iostream>
+
 using namespace wibble::str;
 
 namespace divine {
@@ -2035,57 +2038,70 @@ void dve_compiler::gen_transition_info()
     }
 
     // compute transition coenabledness
-    std::vector< std::vector<bool> > transition_coenabled;
+   std::vector< std::vector<bool> > transition_coenabled(transitions.size());
 
     for(size_int_t i=0; i < transitions.size(); i++) {
-        std::vector<bool> &per_transition_coenabled = transition_coenabled[i];
         set<int> &gs = guards[i];
+        std::vector<bool> tmp(transitions.size());
+        transition_coenabled[i] = tmp;
+
         // for each guard of transition i
         for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
             // check coenabledness with each guard of transition j
             for(size_int_t j=0; j < transitions.size(); j++) {
+                bool coenabled = true;
                 set<int> &gs2 = guards[j];
                 for(set<int>::iterator iy = gs2.begin(); iy != gs2.end(); iy++) {
-                    per_transition_coenabled[j] |= !may_be_coenabled(guard[*ix], guard[*iy]);
+                     coenabled &= may_be_coenabled(guard[*ix], guard[*iy]);
                 }
+                transition_coenabled[i][j] = coenabled;
             }
         }
     }
 
     // compute nds guard -> set of transitions
-    std::vector< std::vector<bool> > guard_nds;
+    std::vector< std::vector<bool> > guard_nds(guard.size());
     for(size_int_t i=0; i < guard.size(); i++) {
+        std::vector<bool> tmp(transitions.size());
+        guard_nds[i] = tmp;
         std::vector<bool> &per_guard_nds = guard_nds[i];
         for(size_int_t j=0; j < transitions.size(); j++) {
-            per_guard_nds[j] |= is_guard_nds(guard[i], transitions[j]);
+            per_guard_nds[j] = is_guard_nds(guard[i], transitions[j]);
         }
     }
 
     // compute nds of transitions x transition
-    std::vector< std::vector<bool> > transition_nds;
+    std::vector< std::vector<bool> > transition_nds(transitions.size());
     for(size_int_t i=0; i < transitions.size(); i++) {
-        std::vector<bool> &per_transition_nds = transition_nds[i];
         set<int> &gs = guards[i];
+        std::vector<bool> tmp(transitions.size());
+        transition_nds[i] = tmp;
         // for each guard of transition i, mark the disabling transitions as disabling..
         for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
             for(size_int_t j=0; j < transitions.size(); j++) {
-                per_transition_nds[j] = per_guard_nds[*ix][j];
+                transition_nds[i][j] = guard_nds[*ix][j];
             }
         }
     }
 
     // compute variable set of transition
-    std::vector< std::vector<bool> > transition_variable_set;
+    std::vector< std::vector<bool> > transition_variable_set(transitions.size());
     // compute read set of transition
-    std::vector< std::vector<bool> > transition_read_set;
+    std::vector< std::vector<bool> > transition_read_set(transitions.size());
     // compute write set of transition
-    std::vector< std::vector<bool> > transition_write_set;
+    std::vector< std::vector<bool> > transition_write_set(transitions.size());
     // compute sets
     for(size_int_t i = 0; i < transitions.size(); i++) {
         ext_transition_t& current = transitions[i];
-        std::vector<bool> &per_transition_variable_set = transition_variable_set[i];
-        std::vector<bool> &per_transition_read_set = transition_read_set[i];
-        std::vector<bool> &per_transition_write_set = transition_write_set[i];
+
+
+        std::vector<bool> tmp1(sv_count);
+        transition_variable_set[i] = tmp1;
+        std::vector<bool> tmp2(sv_count);
+        transition_read_set[i] = tmp2;
+        std::vector<bool> tmp3(sv_count);
+        transition_write_set[i] = tmp3;
+
         for(size_int_t j = 0; j < sv_count; j++)
         {
             int dep = current.commited?current.sv_read[j]:max(c_base_sv_read[j], current.sv_read[j]);
@@ -2099,32 +2115,11 @@ void dve_compiler::gen_transition_info()
                     }
                 }
             }
-            per_transition_variable_set[j] |=  dep;
-            per_transition_read_set[j] |=  dep;
-            per_transition_write_set[j] |=  current.sv_write[j];
+            transition_variable_set[i][j] =  dep || current.sv_write[j];
+            transition_read_set[i][j] =  dep;
+            transition_write_set[i][j] =  current.sv_write[j];
         }
     }
-
-    // compute certainly-commutes condition (transition x transition)
-    std::vector< std::vector<bool> > certainly_commutes;
-    for(size_int_t i = 0; i < transitions.size(); i++) {
-        std::vector<bool> &per_transition_certainly_commutes = certainly_commutes[i];
-        for(size_int_t j = 0; j < transitions.size(); j++) {
-            for(size_int_t k = 0; k < sv_count; k++)
-            {
-                per_transition_certainly_commutes[j] =
-                    transition_read_set[i][k] &&
-                    transition_read_set[j][k] &&
-                    (
-                        transition_write_set[i][k] ||
-                        transition_write_set[j][k]
-                    );
-            }
-        }
-    }
-
-
-
 
     // output transition vectors
     snprintf(buf, BUFLEN, "int transition_dependency[][2][%d] = ", sv_count);
@@ -2138,18 +2133,7 @@ void dve_compiler::gen_transition_info()
         append("{{" );
         for(size_int_t j = 0; j < sv_count; j++)
         {
-        	int dep = current.commited?current.sv_read[j]:max(c_base_sv_read[j], current.sv_read[j]);
-        	if (!dep && current.buchi) { // use guard info
-        		set<int> &gs = guards[i];
-                for(set<int>::iterator ix = gs.begin(); ix != gs.end(); ix++) {
-        			std::vector<int> &per_guard_matrix = guard_matrix[*ix];
-        			if (per_guard_matrix[j]) {
-        				dep = 1;
-        				break;
-        			}
-        		}
-        	}
-			snprintf(buf, BUFLEN, "%s%d", ((j==0)?"":","), dep);
+			snprintf(buf, BUFLEN, "%s%d", ((j==0)?"":","), transition_read_set[i][j]?1:0 );
 			append(buf);
         }
         append("},{" );
@@ -2491,17 +2475,21 @@ void dve_compiler::gen_transition_info()
     snprintf(buf, BUFLEN, "int dna[%zu][%zu] = ", transitions.size(), transitions.size());
     line(buf);
     block_begin();
+    size_int_t count = 0;
     for(size_int_t i=0; i < transitions.size(); i++) {
         append("{");
         for(size_int_t j=0; j < transitions.size(); j++) {
             if (j != 0) append(", ");
-            append(is_dna(transitions[i], transitions[j])?"1":"0");
+            bool dna = is_dna(transitions, transition_coenabled, transition_nds, transition_write_set, i, j);
+            append(dna ? "1" : "0");
+            count += dna ? 1 : 0;
         }
-        if (i == guard.size() - 1)
+        if (i == transitions.size() - 1)
             line("}");
         else
             line("},");
     }
+    cout << "DNA " << count << " / " << transitions.size()*transitions.size() << endl;
 
     block_end();
     line(";");
@@ -2529,7 +2517,7 @@ void dve_compiler::gen_transition_info()
         append("{");
         for(size_int_t j=0; j < transitions.size(); j++) {
             if (j != 0) append(", ");
-            append(is_guard_nds(guard[i], transitions[j])?"1":"0");
+            append( guard_nds[i][j] ?"1":"0");
         }
         if (i == guard.size() - 1)
             line("}");
@@ -2552,7 +2540,9 @@ void dve_compiler::gen_transition_info()
     line();
 }
 
-bool dve_compiler::is_guard_nes( guard& g, ext_transition_t& t ) {
+bool
+dve_compiler::is_guard_nes( guard& g, ext_transition_t& t )
+{
     switch (g.type) {
         case GUARD_PC:
             if (g.pc.gid == t.first->get_process_gid())
@@ -2576,7 +2566,9 @@ bool dve_compiler::is_guard_nes( guard& g, ext_transition_t& t ) {
     return true;
 }
 
-bool dve_compiler::is_guard_nds( guard& g, ext_transition_t& t ) {
+bool
+dve_compiler::is_guard_nds( guard& g, ext_transition_t& t )
+{
     switch (g.type) {
         case GUARD_PC:
             if (g.pc.gid == t.first->get_process_gid())
@@ -2602,24 +2594,215 @@ bool dve_compiler::is_guard_nds( guard& g, ext_transition_t& t ) {
     return true;
 }
 
-bool dve_compiler::is_dna( ext_transition_t& t1, ext_transition_t& t2 ) {
-    if (has_commited) { exit(1); } // unsupported
+bool
+dve_compiler::is_dna(std::vector<ext_transition_t>& transitions,
+        std::vector< std::vector<bool> >& transition_coenabled,
+        std::vector< std::vector<bool> >& transition_nds,
+        std::vector< std::vector<bool> >& deps,
+        int t1, int t2 )
+{
+    ext_transition_t *trans1 = &transitions[t1];
+    ext_transition_t *trans2 = &transitions[t2];
+
+    if (have_property)
+        return true; // for LTL models we are not interested in POR anyway (use LTSmin LTL layer)
+
+    if (trans1->commited || trans2->commited)
+        return true; // TODO
+
+    // two transitions always accord if they are never coenabled:
+    if (!transition_coenabled[t1][t2])
+        return false;
+
     // overappoximation:
     // two transitions do not accord if
+    // 1) they disable each other
+    if (transition_nds[t1][t2] || transition_nds[t2][t1])
+        return true;
 
-    // 1) there exists a variable in the test set of t1 that is in the write down set of t2 (the set of transitions that disables
+    // 2) the common variables of t1 and t2 are a subset of the all the variables in the write sets of t1 and t2
+    std::vector<simple_predicate> sps1;
+    std::vector<simple_predicate> sps2;
+    if ( !extract_assigns(trans1, sps1, deps[t2]) ||
+         !extract_assigns(trans2, sps2, deps[t1]) )
+        return true;
 
-    // 2) t1 is in the write down set of t2
-
-    // 3) the common variables of t1 and t2 are a subset of the all the variables in the write sets of t1 and t2
-
-    if (t1.) {
-
+    for(size_int_t i=0; i < sps1.size(); i++) {
+        for(size_int_t j=0; j < sps2.size(); j++) {
+            if (!commutes(sps1[i], sps2[j])) {
+                return true;
+            }
+        }
     }
+
+    return false;
+}
+
+bool
+dve_compiler::commutes ( simple_predicate& p1, simple_predicate& p2 )
+{
+    if (p1.variable_name != p2.variable_name) {
+        return true;
+    } else if (p1.relation == PRED_EQ && p2.relation == PRED_EQ) {
+        return p1.variable_value == p2.variable_value;
+    } else if ( p1.relation == PRED_GT && p2.relation == PRED_GT) {
+        return true;
+    } else if ( (p1.relation == PRED_GEQ && p2.relation == PRED_LEQ) ||
+                (p1.relation == PRED_LEQ && p2.relation == PRED_GEQ)) {
+        return true;
+    }
+    return false;
+}
+
+bool
+dve_compiler::dependent ( std::vector<int>& a, std::vector<bool>& b )
+{
+    for (size_int_t j = 0; j < a.size(); j++) {
+        if (a[j] && b[j]) return true;
+    }
+    return false;
+}
+
+bool
+dve_compiler::extract_assigns ( ext_transition_t *et,
+                                std::vector<simple_predicate>& p,
+                                std::vector<bool>& deps )
+{
+    ext_transition_t tmp;
+    int count = count_state_variables();
+    tmp.sv_read.resize(count);
+    tmp.sv_write.resize(count);
+
+    if(et->synchronized)
+    {
+        simple_predicate sp;
+        sp.relation = PRED_EQ;
+        for (size_int_t s = 0;s < et->first->get_sync_expr_list_size();s++) {
+            dve_expression_t& left = *et->first->get_sync_expr_list_item(s);
+            dve_expression_t& right = *et->second->get_sync_expr_list_item(s);
+            tmp.sv_read.clear();
+            analyse_expression (left, tmp, tmp.sv_read);
+            if (!dependent(tmp.sv_read, deps))
+                continue;
+
+            if ( !get_const_varname(left, sp.variable_name) ||
+                 !get_const_expression(right, sp.variable_value) ) {
+                return false;
+            }
+            p.push_back(sp);
+        }
+
+    } else {
+        int chan = et->first->get_channel_gid();
+
+        mark_dependency(et->first->get_channel_gid(),
+                        state_creator_t::CHANNEL_BUFFER, -1, tmp.sv_read);
+        if (dependent(tmp.sv_read, deps)) {
+
+            if (et->first->get_sync_mode() == SYNC_EXCLAIM_BUFFER) {
+                simple_predicate sp;
+                sp.relation = PRED_GEQ;
+                sp.variable_name = channel_items( chan, "out" );
+                p.push_back(sp);
+            }
+            if (et->first->get_sync_mode() == SYNC_ASK_BUFFER) {
+                simple_predicate sp;
+                sp.relation = PRED_LEQ;
+                sp.variable_name = channel_items( chan, "out" );
+                p.push_back(sp);
+            }
+
+        }
+    }
+
+    //first transition effect (Program counter)
+    simple_predicate sp;
+    sp.relation = PRED_EQ;
+    sp.variable_name = process_state( et->first->get_process_gid(), "out" );
+    sp.variable_value = et->first->get_state2_lid();
+    tmp.sv_read.clear();
+    mark_dependency(et->first->get_process_gid(),
+                    state_creator_t::PROCESS_STATE, -1, tmp.sv_read);
+    if (dependent(tmp.sv_read, deps))
+        p.push_back(sp);
+
+    for(size_int_t e = 0;e < et->first->get_effect_count();e++) {
+        if (!get_assignment(*et->first->get_effect(e), p, deps)) {
+            return false;
+        }
+    }
+
+    if (et->synchronized) { //second transition effect
+        simple_predicate sp;
+        sp.relation = PRED_EQ;
+        sp.variable_name = process_state( et->second->get_process_gid(), "out" );
+        sp.variable_value = et->second->get_state2_lid();
+        tmp.sv_read.clear();
+        mark_dependency(et->second->get_process_gid(),
+                        state_creator_t::PROCESS_STATE, -1, tmp.sv_read);
+        if (dependent(tmp.sv_read, deps))
+        p.push_back(sp);
+
+        for (size_int_t e = 0;e < et->second->get_effect_count();e++) {
+            if (!get_assignment(*et->second->get_effect(e), p, deps)) {
+                return false;
+            }
+        }
+    }
+
+    // have_property: we skip LTL properties anyway!
+
     return true;
 }
 
-bool dve_compiler::may_be_coenabled( guard& ga, guard& gb) {
+bool
+dve_compiler::get_assignment ( dve_expression_t & expr,
+                               std::vector<simple_predicate>& p,
+                               std::vector<bool>& deps) {
+    simple_predicate sp;
+    ext_transition_t tmp;
+    int count = count_state_variables();
+    tmp.sv_read.resize(count);
+    tmp.sv_write.resize(count);
+    if (expr.get_operator() == T_ASSIGNMENT) {
+        if ( !get_const_varname(*expr.left(), sp.variable_name) )
+            return false;
+
+        analyse_expression (*expr.left(), tmp, tmp.sv_read);
+        if (!dependent(tmp.sv_read, deps))
+            return true; // no need to add
+
+        if ( get_const_expression(*expr.right(), sp.variable_value) )
+        {
+            sp.relation = PRED_EQ;
+            p.push_back(sp);
+            return true;
+        }
+        else
+        {
+            string other;
+            switch (expr.right()->get_operator()) { // x = x + 1  AND  x = x - 1
+            case T_PLUS: case T_MINUS:
+                if ( !get_const_varname(*expr.right()->left(), other) )
+                    return NULL;
+                if (other != sp.variable_name)
+                    return NULL;
+                if ( !get_const_expression(*expr.right()->right(), sp.variable_value) )
+                    return NULL;
+                if (sp.variable_value != 1)
+                    return NULL;
+                sp.relation = PRED_GT; // ++ / --
+                p.push_back(sp);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool
+dve_compiler::may_be_coenabled( guard& ga, guard& gb)
+{
     // if type different, return default
     if (ga.type == gb.type || ga.type == GUARD_COMMITED_FIRST) {
         switch (ga.type) {
@@ -2661,7 +2844,8 @@ bool dve_compiler::may_be_coenabled( guard& ga, guard& gb) {
     return true;
 }
 
-bool dve_compiler::get_const_expression( dve_expression_t & expr, int & value)
+bool
+dve_compiler::get_const_expression( dve_expression_t & expr, int & value)
 {
     dve_symbol_table_t * parent_table = expr.get_symbol_table();
     if (!parent_table) gerr << "Get const expression: Symbol table not set" << thr();
@@ -2715,6 +2899,7 @@ bool dve_compiler::get_const_varname( dve_expression_t & expr, string& var)
     }
     return false;
 }
+
 void dve_compiler::extract_predicates( std::vector<simple_predicate>& p, dve_expression_t& expr)
 {
     dve_symbol_table_t * parent_table = expr.get_symbol_table();
@@ -2866,7 +3051,8 @@ void dve_compiler::mark_dependency( size_int_t gid, int type, int idx, std::vect
     }
 }
 
-int dve_compiler::count_state_variables()
+int
+dve_compiler::count_state_variables()
 {
     size_int_t size = 0;
     for (size_int_t i=0; i!=state_creators_count; ++i)
