@@ -76,6 +76,7 @@ struct dve_compiler: public dve_explicit_system_t
 
     string m_line;
     ostream *m_output;
+    bool m_verbose;
     int m_indent;
 
     void indent() { ++m_indent; }
@@ -212,6 +213,9 @@ struct dve_compiler: public dve_explicit_system_t
 
     void setOutput( std::ostream &o ) {
         m_output = &o;
+    }
+    void setVerbose( bool v ) {
+        m_verbose = v;
     }
 
     void yield_state();

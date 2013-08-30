@@ -59,7 +59,8 @@ struct Compile {
     }
 
     void compileDve( std::string in, bool ltsmin, bool ltsmin_ltl,
-    											  bool textbook ) {
+    											  bool textbook,
+    											  bool verbose ) {
     	if (textbook)
     		die( "Textbook LTL semantics not yet implemented." );
     	if (ltsmin && ltsmin_ltl)
@@ -71,6 +72,7 @@ struct Compile {
         std::string outfile = str::basename( in ) + ".cpp";
         std::ofstream out( outfile.c_str() );
         compiler.setOutput( out );
+        compiler.setVerbose( verbose );
         compiler.print_generator();
 
         if (ltsmin) {
@@ -82,7 +84,7 @@ struct Compile {
 
     void compileMurphi( std::string in );
 
-    void main() {
+    void main(bool verbose) {
         if ( !opts.hasNext() )
             die_help( "FATAL: No input file specified." );
         std::string input = opts.next();
@@ -91,7 +93,7 @@ struct Compile {
             die( "FATAL: cannot open input file " + input + " for reading" );
         if ( str::endsWith( input, ".dve" ) ) {
             compileDve( input, o_ltsmin->boolValue(), o_ltsmin_ltl->boolValue(),
-            										  o_textbook->boolValue() );
+                               o_textbook->boolValue(), verbose );
 #ifdef HAVE_MURPHI
         } else if ( str::endsWith( input, ".m" ) ) {
             compileMurphi( input );

@@ -455,7 +455,7 @@ struct Main {
 
     void noMC() {
         if ( opts.foundCommand() == compile.cmd_compile )
-            compile.main();
+            compile.main(o_verbose->boolValue());
         if ( opts.foundCommand() == combine.cmd_combine )
             combine.main();
     }

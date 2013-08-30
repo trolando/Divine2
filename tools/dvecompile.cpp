@@ -4,6 +4,7 @@
 
 #include <string>
 #include <iostream>
+#include <iomanip>
 
 using namespace wibble::str;
 
@@ -1881,8 +1882,22 @@ void dve_compiler::merge_dependent_expression(std::vector<guard>& guard, int sv_
     guard.swap(result);
 }
 
+class mystreambuf: public std::streambuf {};
+
+static void report (ostream &log, string name, size_int_t count, size_int_t total) {
+    double percent = ((double)count) / total * 100;
+    log << name << ": " << setw(8) << count << " / " << setw(8) << total <<
+            " (" << fixed << setprecision(1) << setw(5) << percent << "%)" <<
+            endl;
+}
+
 void dve_compiler::gen_transition_info()
 {
+    mystreambuf nostreambuf;
+    std::ostream nocout(&nostreambuf);
+    std::ostream &log = m_verbose ? cout : nocout;
+
+
     int sv_count = count_state_variables();
     bool has_commited = false;
     char buf[BUFLEN];
@@ -2056,6 +2071,17 @@ void dve_compiler::gen_transition_info()
                 }
                 transition_coenabled[i][j] = coenabled;
             }
+        }
+    }
+
+    // compute nes guard -> set of transitions
+    std::vector< std::vector<bool> > guard_nes(guard.size());
+    for(size_int_t i=0; i < guard.size(); i++) {
+        std::vector<bool> tmp(transitions.size());
+        guard_nes[i] = tmp;
+        std::vector<bool> &per_guard_nes = guard_nes[i];
+        for(size_int_t j=0; j < transitions.size(); j++) {
+            per_guard_nes[j] = is_guard_nes(guard[i], transitions[j]);
         }
     }
 
@@ -2395,6 +2421,11 @@ void dve_compiler::gen_transition_info()
     block_end();
     line();
 
+    log << "Groups: " << transitions.size()  << endl;
+    log << "Guards: " << guard.size() << endl;
+    log << "--------------" << endl;
+    size_int_t count = 0;
+
     //////////////////////////////////////////
     // EXPORT GUARD MAY BE COENABLED MATRIX //
     //////////////////////////////////////////
@@ -2411,6 +2442,7 @@ void dve_compiler::gen_transition_info()
                 append("1");
             } else {
                 append("0");
+                count++;
             }
         }
         if (i == guard.size() - 1)
@@ -2418,6 +2450,8 @@ void dve_compiler::gen_transition_info()
         else
             line("},");
     }
+    report(log, "!MCE", count, guard.size()*guard.size());
+
     block_end();
     line(";");
     line();
@@ -2441,17 +2475,20 @@ void dve_compiler::gen_transition_info()
     snprintf(buf, BUFLEN, "int guard_nes[%zu][%zu] = ", guard.size(), transitions.size());
     line(buf);
     block_begin();
+    count = 0;
     for(size_int_t i=0; i < guard.size(); i++) {
         append("{");
         for(size_int_t j=0; j < transitions.size(); j++) {
             if (j != 0) append(", ");
-            append(is_guard_nes(guard[i], transitions[j])?"1":"0");
+            append(guard_nes[i][j]?"1":"0");
+            count += guard_nes[i][j] ? 1 : 0;
         }
         if (i == guard.size() - 1)
             line("}");
         else
             line("},");
     }
+    report(log, "!NES", count, guard.size()*transitions.size());
 
     block_end();
     line(";");
@@ -2468,44 +2505,6 @@ void dve_compiler::gen_transition_info()
     line();
 
     ////////////////////////////////////////////////
-    // EXPORT DO NOT ACCORD MATRIX                //
-    ////////////////////////////////////////////////
-
-    // guard do not accord matrix (#transitions x #transitions)
-    snprintf(buf, BUFLEN, "int dna[%zu][%zu] = ", transitions.size(), transitions.size());
-    line(buf);
-    block_begin();
-    size_int_t count = 0;
-    for(size_int_t i=0; i < transitions.size(); i++) {
-        append("{");
-        for(size_int_t j=0; j < transitions.size(); j++) {
-            if (j != 0) append(", ");
-            bool dna = is_dna(transitions, transition_coenabled, transition_nds, transition_write_set, i, j);
-            append(dna ? "1" : "0");
-            count += dna ? 1 : 0;
-        }
-        if (i == transitions.size() - 1)
-            line("}");
-        else
-            line("},");
-    }
-    cout << "DNA " << count << " / " << transitions.size()*transitions.size() << endl;
-
-    block_end();
-    line(";");
-    line();
-
-    // guard dna function
-    line ("extern \"C\" const int* get_dna_matrix(int t) " );
-    block_begin();
-    snprintf(buf, BUFLEN, "if (t >= 0 && t < %zu) return dna[t];", transitions.size());
-    line(buf);
-    snprintf(buf, BUFLEN, "return NULL;");
-    line(buf);
-    block_end();
-    line();
-
-    ////////////////////////////////////////////////
     // EXPORT NECESSARY DISABLING SETS FOR GUARDS //
     ////////////////////////////////////////////////
 
@@ -2513,17 +2512,20 @@ void dve_compiler::gen_transition_info()
     snprintf(buf, BUFLEN, "int guard_nds[%zu][%zu] = ", guard.size(), transitions.size());
     line(buf);
     block_begin();
+    count = 0;
     for(size_int_t i=0; i < guard.size(); i++) {
         append("{");
         for(size_int_t j=0; j < transitions.size(); j++) {
             if (j != 0) append(", ");
             append( guard_nds[i][j] ?"1":"0");
+            count += !guard_nds[i][j] ? 1 : 0;
         }
         if (i == guard.size() - 1)
             line("}");
         else
             line("},");
     }
+    report(log, "!NDS", count, guard.size()*transitions.size());
 
     block_end();
     line(";");
@@ -2533,6 +2535,45 @@ void dve_compiler::gen_transition_info()
     line ("extern \"C\" const int* get_guard_nds_matrix(int g) " );
     block_begin();
     snprintf(buf, BUFLEN, "if (g>=0 && g < %zu) return guard_nds[g];", guard.size());
+    line(buf);
+    snprintf(buf, BUFLEN, "return NULL;");
+    line(buf);
+    block_end();
+    line();
+
+
+    ////////////////////////////////////////////////
+    // EXPORT DO NOT ACCORD MATRIX                //
+    ////////////////////////////////////////////////
+
+    // guard do not accord matrix (#transitions x #transitions)
+    snprintf(buf, BUFLEN, "int dna[%zu][%zu] = ", transitions.size(), transitions.size());
+    line(buf);
+    block_begin();
+    count = 0;
+    for(size_int_t i=0; i < transitions.size(); i++) {
+        append("{");
+        for(size_int_t j=0; j < transitions.size(); j++) {
+            if (j != 0) append(", ");
+            bool dna = is_dna(transitions, transition_coenabled, transition_nds, transition_write_set, i, j);
+            append(dna ? "1" : "0");
+            count += !dna ? 1 : 0;
+        }
+        if (i == transitions.size() - 1)
+            line("}");
+        else
+            line("},");
+    }
+    report(log, "!DNA", count, transitions.size()*transitions.size());
+
+    block_end();
+    line(";");
+    line();
+
+    // guard dna function
+    line ("extern \"C\" const int* get_dna_matrix(int t) " );
+    block_begin();
+    snprintf(buf, BUFLEN, "if (t >= 0 && t < %zu) return dna[t];", transitions.size());
     line(buf);
     snprintf(buf, BUFLEN, "return NULL;");
     line(buf);
@@ -2673,18 +2714,23 @@ dve_compiler::extract_assigns ( ext_transition_t *et,
     tmp.sv_read.resize(count);
     tmp.sv_write.resize(count);
 
+    sync_mode_t sm = et->first->get_sync_mode();
     if(et->synchronized)
     {
-        simple_predicate sp;
-        sp.relation = PRED_EQ;
+        return false; // TODO: yields incorrect reductions for at least prod_cell2 and firewire_link2
+
+        // synchronizing communication
         for (size_int_t s = 0;s < et->first->get_sync_expr_list_size();s++) {
             dve_expression_t& left = *et->first->get_sync_expr_list_item(s);
             dve_expression_t& right = *et->second->get_sync_expr_list_item(s);
             tmp.sv_read.clear();
             analyse_expression (left, tmp, tmp.sv_read);
+            analyse_expression (right, tmp, tmp.sv_read);
             if (!dependent(tmp.sv_read, deps))
                 continue;
 
+            simple_predicate sp;
+            sp.relation = PRED_EQ;
             if ( !get_const_varname(left, sp.variable_name) ||
                  !get_const_expression(right, sp.variable_value) ) {
                 return false;
@@ -2692,30 +2738,26 @@ dve_compiler::extract_assigns ( ext_transition_t *et,
             p.push_back(sp);
         }
 
-    } else {
+    } else if (sm == SYNC_EXCLAIM_BUFFER || sm == SYNC_ASK_BUFFER) {
         int chan = et->first->get_channel_gid();
 
+        tmp.sv_read.clear();
         mark_dependency(et->first->get_channel_gid(),
                         state_creator_t::CHANNEL_BUFFER, -1, tmp.sv_read);
         if (dependent(tmp.sv_read, deps)) {
-
-            if (et->first->get_sync_mode() == SYNC_EXCLAIM_BUFFER) {
-                simple_predicate sp;
+            simple_predicate sp;
+            if (sm == SYNC_EXCLAIM_BUFFER) {
                 sp.relation = PRED_GEQ;
-                sp.variable_name = channel_items( chan, "out" );
-                p.push_back(sp);
-            }
-            if (et->first->get_sync_mode() == SYNC_ASK_BUFFER) {
-                simple_predicate sp;
+            } else if (sm == SYNC_ASK_BUFFER) {
                 sp.relation = PRED_LEQ;
-                sp.variable_name = channel_items( chan, "out" );
-                p.push_back(sp);
             }
+            sp.variable_name = channel_items( chan, "out" );
+            p.push_back(sp);
 
         }
     }
 
-    //first transition effect (Program counter)
+    // first transition effect (Program counter)
     simple_predicate sp;
     sp.relation = PRED_EQ;
     sp.variable_name = process_state( et->first->get_process_gid(), "out" );
@@ -2732,7 +2774,8 @@ dve_compiler::extract_assigns ( ext_transition_t *et,
         }
     }
 
-    if (et->synchronized) { //second transition effect
+    // second transition effect
+    if (et->synchronized) {
         simple_predicate sp;
         sp.relation = PRED_EQ;
         sp.variable_name = process_state( et->second->get_process_gid(), "out" );
@@ -2741,7 +2784,7 @@ dve_compiler::extract_assigns ( ext_transition_t *et,
         mark_dependency(et->second->get_process_gid(),
                         state_creator_t::PROCESS_STATE, -1, tmp.sv_read);
         if (dependent(tmp.sv_read, deps))
-        p.push_back(sp);
+            p.push_back(sp);
 
         for (size_int_t e = 0;e < et->second->get_effect_count();e++) {
             if (!get_assignment(*et->second->get_effect(e), p, deps)) {
