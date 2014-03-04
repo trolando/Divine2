@@ -473,7 +473,13 @@ void dve_compiler::analyse_expression( dve_expression_t & expr, ext_transition_t
             } else {
                 // some expression, mark all & continue analysis
                 mark_dependency(expr.get_ident_gid(), state_creator_t::VARIABLE, -1, dep);
-                analyse_expression(*expr.left(), ext_transition, dep);
+                if ((*expr.left()).get_operator() == T_ASSIGNMENT) {
+                    analyse_expression(*expr.left(), ext_transition, ext_transition.sv_write);                    
+                } else if (dep == ext_transition.sv_write) {
+                    analyse_expression(*expr.left(), ext_transition, ext_transition.sv_read);
+                } else {
+                    analyse_expression(*expr.left(), ext_transition, dep);
+                }
             }
             break;
         case T_LT: case T_LEQ: case T_EQ: case T_NEQ: case T_GT: case T_GEQ:
