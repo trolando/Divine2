@@ -22,6 +22,7 @@ struct ext_transition_t
     dve_transition_t *property; // transition of property automaton
     std::vector<int> sv_read;
     std::vector<int> sv_write;
+    std::vector<int> sv_actions_read;
 };
 
 typedef enum {GUARD_EXPR, GUARD_PC, GUARD_CHAN, GUARD_COMMITED_FIRST} guard_type;
@@ -228,7 +229,7 @@ struct dve_compiler: public dve_explicit_system_t
     void new_output_state();
 
     void gen_successors();
-    void gen_ltsmin_successors();
+    void gen_ltsmin_successors(bool condition);
     void gen_is_accepting();
     void gen_header();
     void gen_state_struct();
