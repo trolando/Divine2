@@ -60,6 +60,7 @@ struct dve_compiler: public dve_explicit_system_t
     bool ltsmin_ltl; // divine LTL semantics in LTsmin successor generator
     bool many;
     int current_label;
+    bool may_write_add_read;
 
     bool have_property;
     map<size_int_t,map<size_int_t,vector<ext_transition_t> > > transition_map;
@@ -97,8 +98,9 @@ struct dve_compiler: public dve_explicit_system_t
         outline();
     }
 
-    dve_compiler(bool ltsmin, bool ltsmin_ltl, error_vector_t & evect=gerr)
-        : explicit_system_t(evect), dve_explicit_system_t(evect), current_label(0), m_indent( 0 ), ltsmin(ltsmin), ltsmin_ltl(ltsmin_ltl)
+    dve_compiler(bool ltsmin, bool ltsmin_ltl, error_vector_t & evect=gerr, bool may_write_add_read=false)
+        : explicit_system_t(evect), dve_explicit_system_t(evect), current_label(0), m_indent( 0 ), 
+            ltsmin(ltsmin), ltsmin_ltl(ltsmin_ltl), may_write_add_read(may_write_add_read)
     {}
     virtual ~dve_compiler() {}
 
@@ -216,6 +218,10 @@ struct dve_compiler: public dve_explicit_system_t
     }
     void setVerbose( bool v ) {
         m_verbose = v;
+    }
+    
+    void setMayReadAddWrite(bool w) {
+        may_write_add_read = w;        
     }
 
     void yield_state();

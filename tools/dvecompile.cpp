@@ -473,6 +473,9 @@ void dve_compiler::analyse_expression( dve_expression_t & expr, ext_transition_t
             } else {
                 // some expression, mark all & continue analysis
                 mark_dependency(expr.get_ident_gid(), state_creator_t::VARIABLE, -1, dep);
+				if (dep == ext_transition.sv_write && may_write_add_read) {
+                    mark_dependency(expr.get_ident_gid(), state_creator_t::VARIABLE, -1, ext_transition.sv_read);
+                }
                 if ((*expr.left()).get_operator() == T_ASSIGNMENT) {
                     analyse_expression(*expr.left(), ext_transition, ext_transition.sv_write);                    
                 } else if (dep == ext_transition.sv_write) {

@@ -19,6 +19,7 @@ struct Compile {
     commandline::BoolOption *o_ltsmin;
     commandline::BoolOption *o_ltsmin_ltl;
     commandline::BoolOption *o_textbook;
+    commandline::BoolOption *o_may_write_add_read;
     commandline::Engine *cmd_compile;
     commandline::StandardParserWithMandatoryCommand &opts;
 
@@ -59,13 +60,13 @@ struct Compile {
     }
 
     void compileDve( std::string in, bool ltsmin, bool ltsmin_ltl,
-    											  bool textbook,
-    											  bool verbose ) {
+                      bool textbook, bool verbose, bool may_write_add_read ) {
     	if (textbook)
     		die( "Textbook LTL semantics not yet implemented." );
     	if (ltsmin && ltsmin_ltl)
             die( "Use -l OR -L." );
         dve_compiler compiler(ltsmin || ltsmin_ltl, ltsmin_ltl);
+        compiler.setMayReadAddWrite(may_write_add_read);
         compiler.read( in.c_str() );
         compiler.analyse();
 
@@ -93,7 +94,7 @@ struct Compile {
             die( "FATAL: cannot open input file " + input + " for reading" );
         if ( str::endsWith( input, ".dve" ) ) {
             compileDve( input, o_ltsmin->boolValue(), o_ltsmin_ltl->boolValue(),
-                               o_textbook->boolValue(), verbose );
+                               o_textbook->boolValue(), verbose, o_may_write_add_read->boolValue());
 #ifdef HAVE_MURPHI
         } else if ( str::endsWith( input, ".m" ) ) {
             compileMurphi( input );
@@ -118,6 +119,9 @@ struct Compile {
         o_textbook = cmd_compile->add< commandline::BoolOption >(
             "textbook", 't', "textbook", "",
             "ltsmin interface with textbook LTL semantics" );
+        o_may_write_add_read = cmd_compile->add< commandline::BoolOption >(
+            "may_write_add_read", 'W', "may_write_add_read", "",
+            "may write dependency also add a read dependency");
 
     }
 
